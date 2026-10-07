@@ -40,7 +40,28 @@ CREATE TABLE IF NOT EXISTS owner_attempts (
     message_id  INTEGER,
     result      TEXT NOT NULL            -- claimed | already_same_owner | already_other_owner
 );
+
+-- کاربرانی که حداقل یک‌بار در چت خصوصی (PV) به ربات پیام داده‌اند.
+-- user_id یکتاست ⇒ هر کاربر فقط یک‌بار ثبت می‌شود و پیام‌های بعدی تعداد را زیاد نمی‌کند.
+-- این جدول هیچ دسترسی/مالکیتی نمی‌دهد؛ فقط آمار کاربران PV است.
+CREATE TABLE IF NOT EXISTS pv_users (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id       INTEGER NOT NULL UNIQUE,
+    username      TEXT,
+    display_name  TEXT,
+    first_seen_at TEXT NOT NULL
+);
 """
+
+
+@dataclass(frozen=True)
+class PvUser:
+    """یک کاربر ثبت‌شده‌ی چت خصوصی."""
+
+    user_id: int
+    username: Optional[str]
+    display_name: Optional[str]
+    first_seen_at: str
 
 
 @dataclass(frozen=True)
@@ -162,6 +183,61 @@ class OwnerStore:
                 except sqlite3.Error:
                     pass
                 raise
+
+    # -------------------------------------------------- کاربران چت خصوصی (PV)
+    def register_pv_user(
+        self,
+        user_id: int,
+        *,
+        username: Optional[str] = None,
+        display_name: Optional[str] = None,
+    ) -> bool:
+        """ثبت یک‌بارِ کاربر PV.
+
+        Returns:
+            True اگر کاربر «تازه» ثبت شده باشد؛ False اگر از قبل ثبت شده بود
+            (پیام‌های بعدی همان کاربر تعداد را افزایش نمی‌دهند).
+        """
+        user_id = int(user_id)
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                cur = self._conn.execute(
+                    """INSERT OR IGNORE INTO pv_users
+                           (user_id, username, display_name, first_seen_at)
+                       VALUES (?, ?, ?, ?)""",
+                    (user_id, username, display_name, _now()),
+                )
+                self._conn.execute("COMMIT")
+                return cur.rowcount == 1
+            except Exception:
+                try:
+                    self._conn.execute("ROLLBACK")
+                except sqlite3.Error:
+                    pass
+                raise
+
+    def count_pv_users(self) -> int:
+        """تعداد کل کاربران ثبت‌شده‌ی PV."""
+        with self._lock:
+            row = self._conn.execute("SELECT COUNT(*) AS c FROM pv_users").fetchone()
+        return int(row["c"])
+
+    def list_pv_users(self) -> list[PvUser]:
+        """فهرست کاربران PV به ترتیب اولین ثبت (برای شماره‌گذاری پایدار)."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM pv_users ORDER BY id ASC"
+            ).fetchall()
+        return [
+            PvUser(
+                user_id=r["user_id"],
+                username=r["username"],
+                display_name=r["display_name"],
+                first_seen_at=r["first_seen_at"],
+            )
+            for r in rows
+        ]
 
     def attempts(self) -> list[dict]:
         """سابقه‌ی همه‌ی تلاش‌های «ai cod» (برای تست و دیباگ)."""

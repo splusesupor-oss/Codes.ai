@@ -1,6 +1,6 @@
 # ربات «ai cod» سروش پلاس — بدون Bot Token
 
-ربات بسیار ساده با **دو دستور گروهی** («`ai cod`» و «`کدرز`») **+ پاسخ خودکار در پیام خصوصی** که مستقیم با **حساب کاربری سروش پلاس**
+ربات بسیار ساده با **دو دستور گروهی** («`ai cod`» و «`کدرز`») **+ پاسخ خودکار در پیام خصوصی + مدیریت کاربران PV** که مستقیم با **حساب کاربری سروش پلاس**
 به سرور سروش وصل می‌شود. در این پروژه **هیچ Bot Token، هیچ Telegram Bot API و هیچ سرویس واسطه‌ای**
 استفاده نشده است.
 
@@ -164,6 +164,7 @@ soroush_ai_cod_bot/
 │   ├── test_storage.py # پایداری، عدم وابستگی به گروه، اتمیک‌بودن (نخ/پروسه)
 │   ├── test_brand.py   # متن دقیق، آفست‌های UTF-16، اعتبارسنجی با پارسر کتابخانه
 │   ├── test_commands.py# تشخیص دستورها و حالت‌های نرمال‌سازی
+│   ├── test_pv_users.py# مدیریت کاربران PV (ثبت، نمایش، آمار، تکه‌تکه‌کردن)
 │   └── test_flow.py    # سناریوهای ۷، ۸، ۹ + fallback + حالت نقل‌قول واقعی
 └── data/               # (خودکار) سشن و دیتابیس — در .gitignore
 ```
@@ -267,6 +268,37 @@ python bot.py
 * در PV هیچ مالکی ثبت نمی‌شود («`ai cod`» در PV فقط منجر به ارسال پیام معرفی می‌شود).
 * برای خاموش‌کردن این رفتار: `ACOD_PRIVATE_AUTO_REPLY=0`.
 
+### مسیر ۴ — مدیریت کاربران PV (فقط مالک سراسری)
+
+هر کاربری که **حداقل یک‌بار در PV** به ربات پیام بدهد، به‌صورت دائمی در جدول `pv_users`
+همان دیتابیس ثبت می‌شود — **هر کاربر فقط یک‌بار** (`user_id` یکتاست؛ پیام‌های بعدی تعداد
+را افزایش نمی‌دهند). کاربران گروهی هرگز وارد این آمار نمی‌شوند، و ثبت‌شدن در PV هیچ
+مالکیت/ادمینی/عضویتی ایجاد نمی‌کند.
+
+دو دستور، **فقط برای مالک سراسری و فقط در PV**:
+
+| دستور | پاسخ |
+| --- | --- |
+| `تعداد اعضا` | `تعداد اعضا : 12` |
+| `لیست اعضا` | خطوط شماره‌گذاری‌شده، به ترتیب اولین ثبت |
+
+نمونه‌ی «لیست اعضا»:
+
+```
+1 : @osine
+2 : ali
+3 : @elism
+```
+
+* اگر کاربر `username` داشته باشد → `@username`؛ در غیر این صورت نام نمایشی.
+* اگر هیچ‌کدام نبود → `کاربر بدون نام` (مقدار امن، قابل تغییر با `ACOD_PV_UNKNOWN_NAME`).
+* **لیست طولانی:** خطوط به قطعه‌های حداکثر ۳۵۰۰ کاراکتری شکسته و در چند پیام ارسال
+  می‌شوند (سقف واقعی سرور در کتابخانه `utils.split_text(..., limit=4096)` است)، پس
+  با محدودیت طول پیام خطا نمی‌خوریم. عدد با `ACOD_MAX_MESSAGE_CHARS` قابل تنظیم است.
+* کاربر غیرمالک اگر همین متن را بفرستد، فقط همان **پاسخ خودکار معرفی** را می‌گیرد
+  (دستور مدیریتی اجرا نمی‌شود). در گروه‌ها هم این دو دستور اجرا نمی‌شوند.
+* مسیر دستورها کاملاً جدا از منطق مالک سراسری/SQLite قبلی است و چیزی در آن تغییر نکرده.
+
 ---
 
 ### قالب پیام (دقیقاً همان چیزی که خواسته شد)
@@ -302,6 +334,14 @@ CREATE TABLE global_owner (
     claimed_at         TEXT NOT NULL
 );
 CREATE TABLE owner_attempts (...);   -- تاریخچه‌ی همه‌ی تلاش‌ها
+
+CREATE TABLE pv_users (              -- کاربرانی که در PV پیام داده‌اند (آمار)
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id       INTEGER NOT NULL UNIQUE,   -- یکتا ⇒ هر کاربر فقط یک‌بار
+    username      TEXT,
+    display_name  TEXT,
+    first_seen_at TEXT NOT NULL
+);
 ```
 
 `BEGIN IMMEDIATE` + کلید اصلی `slot=1` باعث می‌شود اگر دو پیام `ai cod` **هم‌زمان** (حتی در دو
@@ -321,13 +361,13 @@ python manage.py reset-owner --yes  # فقط برای تست
 ## ۷. تست‌ها
 
 ```bash
-./run_all_tests.sh          # یا: python -m unittest discover -s tests -t . -v   (۴۹ تست)
+./run_all_tests.sh          # یا: python -m unittest discover -s tests -t . -v   (۷۵ تست)
 ```
 
 خروجی واقعی اجرای تست‌ها در همین محیط:
 
 ```
-Ran 49 tests in 0.09s
+Ran 75 tests in 0.13s
 OK
 ```
 
@@ -352,6 +392,14 @@ OK
 | «outgoing خود ربات → بدون پاسخ (جلوگیری از loop)» | `test_private_outgoing_is_ignored` |
 | «پیام گروهی بدون دستور همچنان نادیده» | `test_group_message_without_commands_is_still_ignored` |
 | «یکسان‌بودن قالب گروه و PV» | `test_private_and_group_intro_are_byte_identical` |
+| «ثبت یک‌بارِ کاربر PV + جلوگیری از تکرار» | `test_11_…` / `test_12_repeated_messages_do_not_duplicate` |
+| «نمایش @username / نام نمایشی / کاربر بدون نام» | `test_18` / `test_19` / `test_20_unknown_name_fallback` |
+| «شماره‌گذاری چند کاربر» | `test_22_multiple_users_are_numbered_in_order` |
+| «تعداد اعضا» و «لیست اعضا» برای مالک | `test_23_count_command_for_owner` / `test_24_list_command_for_owner` |
+| «کاربر غیرمالک نتواند اجرا کند» | `test_25_non_owner_cannot_use_admin_commands` |
+| «پیام گروهی وارد آمار PV نشود» | `test_16_group_messages_never_enter_pv_stats` |
+| «تکه‌تکه‌شدن لیست بلند» | `test_29` / `test_30_long_list_is_sent_in_multiple_messages` |
+| «پایداری کاربران PV بعد از ری‌استارت» | `test_15_users_are_persisted_across_restarts` |
 
 تست‌ها **آفلاین** هستند و برای اجرا به حساب واقعی نیازی ندارند (از `tests/fakes.py` استفاده می‌کنند).
 
@@ -369,6 +417,10 @@ OK
 | `ACOD_KODREZ_COMMAND` | `کدرز` | متن دستور معرفی |
 | `ACOD_GROUPS_ONLY` | `1` | دستورها (`ai cod`/`کدرز`) فقط در گروه پردازش شوند (بی‌اثر روی PV) |
 | `ACOD_PRIVATE_AUTO_REPLY` | `1` | هر پیام خصوصی ورودی → ارسال خودکار پیام معرفی |
+| `ACOD_PV_COUNT_COMMAND` | `تعداد اعضا` | متن دستور شمارش کاربران PV |
+| `ACOD_PV_LIST_COMMAND` | `لیست اعضا` | متن دستور فهرست کاربران PV |
+| `ACOD_PV_UNKNOWN_NAME` | `کاربر بدون نام` | نام جایگزین وقتی نام کاربر خالی است |
+| `ACOD_MAX_MESSAGE_CHARS` | `3500` | سقف طول هر پیام (برای تکه‌تکه‌کردن لیست بلند) |
 | `ACOD_QUOTE_MODE` | `entity` | `entity` (نقل‌قول شیشه‌ای داخل پیام) / `reply` (ریپلای + quote_text) / `off` |
 
 ---

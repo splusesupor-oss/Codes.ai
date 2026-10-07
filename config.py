@@ -38,6 +38,20 @@ GROUPS_ONLY = True
 # پیام خصوصی: هر PV ورودی (بدون نیاز به دستور) → پاسخ با همان پیام معرفی
 PRIVATE_AUTO_REPLY = True
 
+# ---------------------------------------------------------------------------
+# مدیریت کاربران PV (فقط مالک سراسری، فقط در چت خصوصی)
+# ---------------------------------------------------------------------------
+PV_COUNT_COMMAND = "تعداد اعضا"     # نمایش تعداد کل کاربران ثبت‌شده در PV
+PV_LIST_COMMAND = "لیست اعضا"       # نمایش فهرست شماره‌گذاری‌شده‌ی کاربران PV
+
+# نام جایگزین وقتی کاربر نه username دارد و نه نام نمایشی
+PV_UNKNOWN_NAME = "کاربر بدون نام"
+
+# سقف طول هر پیام ارسالی. حد واقعی سرور در کتابخانه `utils.split_text`
+# با limit=4096 تعریف شده است؛ برای حاشیه‌ی امن 3500 انتخاب شده تا لیست‌های
+# بلند در چند پیام تکه‌تکه شوند و خطای طول پیام رخ ندهد.
+MAX_MESSAGE_CHARS = 3500
+
 # پیش‌نمایش لینک برای پیام برند نمایش داده شود؟
 LINK_PREVIEW = False
 
@@ -83,6 +97,10 @@ class Config:
     kodrez_command: str = KODREZ_COMMAND
     groups_only: bool = GROUPS_ONLY
     private_auto_reply: bool = PRIVATE_AUTO_REPLY
+    pv_count_command: str = PV_COUNT_COMMAND
+    pv_list_command: str = PV_LIST_COMMAND
+    pv_unknown_name: str = PV_UNKNOWN_NAME
+    max_message_chars: int = MAX_MESSAGE_CHARS
     link_preview: bool = LINK_PREVIEW
     quote_mode: str = QUOTE_MODE
     quote_reply_fallback_to_entity: bool = QUOTE_REPLY_FALLBACK_TO_ENTITY
@@ -100,6 +118,8 @@ class Config:
             groups_only=os.environ.get("ACOD_GROUPS_ONLY", "1") not in ("0", "false", "False"),
             private_auto_reply=os.environ.get("ACOD_PRIVATE_AUTO_REPLY", "1")
             not in ("0", "false", "False"),
+            pv_count_command=os.environ.get("ACOD_PV_COUNT_COMMAND", PV_COUNT_COMMAND),
+            pv_list_command=os.environ.get("ACOD_PV_LIST_COMMAND", PV_LIST_COMMAND),
             link_preview=os.environ.get("ACOD_LINK_PREVIEW", "0") in ("1", "true", "True"),
             quote_mode=os.environ.get("ACOD_QUOTE_MODE", QUOTE_MODE),
         )

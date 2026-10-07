@@ -109,7 +109,8 @@ class FakeEvent:
         self.out = out
         self.sender = FakeSender(
             user_id,
-            first_name=(display_name or "User"),
+            # None → نام پیش‌فرض؛ رشته‌ی خالی → کاربر بدون نام (برای تست fallback)
+            first_name=(display_name if display_name is not None else "User"),
             username=username,
         )
 

@@ -122,6 +122,43 @@ class BrandSender:
         return report
 
     # ------------------------------------------------------------------ helpers
+    async def send_text(self, client, chat, text: str) -> SendReport:
+        """ارسال یک پیام متنی ساده (بدون entity).
+
+        برای پاسخ‌های مدیریتی PV (مثل «تعداد اعضا» / «لیست اعضا») که قالب خاصی
+        لازم ندارند. از همان درخواست واقعی `messages.sendMessage` استفاده می‌کند.
+        """
+        peer = await self._resolve_peer(client, chat)
+        report = SendReport(ok=False, attempts=[])
+        try:
+            result = await client(
+                functions.messages.SendMessageRequest(
+                    peer=peer,
+                    message=text,
+                    no_webpage=not self.cfg.link_preview,
+                )
+            )
+            report.ok = True
+            report.mode = "plain-text"
+            report.message_id = _extract_message_id(result)
+            report.attempts.append({"mode": "plain-text", "ok": True})
+            return report
+        except Exception as exc:  # noqa: BLE001
+            err = f"{type(exc).__name__}: {exc}"
+            report.error = err
+            report.attempts.append({"mode": "plain-text", "ok": False, "error": err})
+            log.warning("ارسال پیام متنی ناموفق بود → %s", err)
+            return report
+
+    async def send_text_chunked(
+        self, client, chat, chunks: list[str]
+    ) -> list[SendReport]:
+        """ارسال چند پیام پشت‌سرهم (برای لیست‌های بلندتر از سقف طول پیام)."""
+        reports = []
+        for chunk in chunks:
+            reports.append(await self.send_text(client, chat, chunk))
+        return reports
+
     @staticmethod
     async def _resolve_peer(client, chat):
         if isinstance(chat, types.TypeInputPeer):

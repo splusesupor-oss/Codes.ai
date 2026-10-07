@@ -78,6 +78,61 @@ def match_command(text: str, cfg: Config) -> Optional[str]:
     return None
 
 
+def match_pv_admin_command(text: str, cfg: Config) -> Optional[str]:
+    """تشخیص دستورهای مدیریتی PV: 'count' برای «تعداد اعضا» و 'list' برای «لیست اعضا»."""
+    if not text or not text.strip():
+        return None
+    given = _normalization_variants(text)
+    if given & _normalization_variants(cfg.pv_count_command):
+        return "count"
+    if given & _normalization_variants(cfg.pv_list_command):
+        return "list"
+    return None
+
+
+def pv_user_label(user, unknown_name: str = "کاربر بدون نام") -> str:
+    """نمایش کاربر PV: اگر username دارد «@username» وگرنه نام نمایشی.
+
+    اگر هیچ‌کدام نبود، نام امن «کاربر بدون نام» برگردانده می‌شود.
+    """
+    username = (getattr(user, "username", None) or "").strip().lstrip("@")
+    if username:
+        return f"@{username}"
+    display_name = (getattr(user, "display_name", None) or "").strip()
+    return display_name or unknown_name
+
+
+def format_pv_user_list(users, unknown_name: str = "کاربر بدون نام") -> list[str]:
+    """ساخت خطوط فهرست: «1 : @osine» به ترتیب ثبت."""
+    return [
+        f"{index} : {pv_user_label(user, unknown_name)}"
+        for index, user in enumerate(users, start=1)
+    ]
+
+
+def chunk_lines(lines: list[str], max_chars: int) -> list[str]:
+    """تکه‌تکه‌کردن خطوط به پیام‌هایی با طول مجاز (برای جلوگیری از خطای طول پیام).
+
+    یک خط بلندتر از سقف، تنها در پیام خودش می‌آید (وسط خط بریده نمی‌شود).
+    """
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+
+    for line in lines:
+        extra = len(line) + (1 if current else 0)   # +1 برای \n
+        if current and current_len + extra > max_chars:
+            chunks.append("\n".join(current))
+            current, current_len = [], 0
+            extra = len(line)
+        current.append(line)
+        current_len += extra
+
+    if current:
+        chunks.append("\n".join(current))
+    return chunks
+
+
 class BotCore:
     """هسته‌ی ربات (مستقل از شبکه و کاملاً تست‌پذیر)."""
 
@@ -94,11 +149,10 @@ class BotCore:
         if getattr(event, "out", False):
             return
 
-        # --- مسیر ۱: پیام خصوصی (PV) → ارسال خودکار پیام معرفی، بدون نیاز به دستور ---
+        # --- مسیر ۱: پیام خصوصی (PV) → ثبت کاربر + پاسخ خودکار معرفی/آمار ---
         # تشخیص با API واقعی SPlusthon: `is_private` (↔ PeerUser بودن چت).
         if getattr(event, "is_private", None) is True:
-            if self.cfg.private_auto_reply:
-                await self._handle_private(client, event)
+            await self._handle_private(client, event)
             return
 
         # --- مسیر ۲: گروه‌ها → دستورها (بدون هیچ تغییری نسبت به قبل) ---
@@ -122,10 +176,69 @@ class BotCore:
 
     # ------------------------------------------------------- پیام خصوصی (PV)
     async def _handle_private(self, client, event) -> None:
-        """هر پیام خصوصی ورودی → ارسال همان پیام معرفی برای همان کاربر."""
-        log.info("پیام خصوصی از کاربر %s → ارسال پیام معرفی",
-                 getattr(event, "sender_id", None))
+        """مسیر پیام خصوصی:
+        ۱) ثبت یک‌بارِ کاربر PV در storage دائمی
+        ۲) اگر فرستنده مالک سراسری باشد و دستور مدیریتی بفرستد → آمار اعضا
+        ۳) در غیر این صورت → همان پاسخ خودکار پیام معرفی (رفتار قبلی، دست‌نخورده)
+        """
+        sender_id = int(getattr(event, "sender_id", 0) or 0)
+
+        # (۱) ثبت کاربر PV — هر کاربر فقط یک‌بار؛ پیام‌های بعدی تعداد را زیاد نمی‌کند.
+        #     کاربران گروهی اینجا ثبت نمی‌شوند (این تابع فقط در مسیر PV صدا زده می‌شود).
+        if sender_id:
+            is_new = self.store.register_pv_user(
+                sender_id,
+                username=self._username(event),
+                display_name=self._display_name(event),
+            )
+            if is_new:
+                log.info("کاربر جدید PV ثبت شد: user_id=%s (تعداد: %s)",
+                         sender_id, self.store.count_pv_users())
+
+        # (۲) دستورهای مدیریتی — فقط مالک سراسری و فقط در PV
+        if sender_id and self.store.is_owner(sender_id):
+            command = match_pv_admin_command(
+                getattr(event, "raw_text", None) or "", self.cfg
+            )
+            if command == "count":
+                await self._send_pv_count(client, event)
+                return
+            if command == "list":
+                await self._send_pv_list(client, event)
+                return
+
+        # (۳) پاسخ خودکار PV (بدون تغییر نسبت به قبل)
+        if not self.cfg.private_auto_reply:
+            return
+
+        log.info("پیام خصوصی از کاربر %s → ارسال پیام معرفی", sender_id)
         self._log_report(await self._send_brand(client, event))
+
+    # ------------------------------------------- آمار کاربران PV (فقط مالک)
+    async def _send_pv_count(self, client, event) -> None:
+        count = self.store.count_pv_users()
+        text = f"{self.cfg.pv_count_command} : {count}"
+        log.info("دستور «%s» توسط مالک → %s", self.cfg.pv_count_command, text)
+        report = await self.sender.send_text(client, await self._peer_of(event), text)
+        self._log_report(report)
+
+    async def _send_pv_list(self, client, event) -> None:
+        users = self.store.list_pv_users()
+        if not users:
+            report = await self.sender.send_text(
+                client, await self._peer_of(event), "هنوز کاربری ثبت نشده است."
+            )
+            self._log_report(report)
+            return
+
+        lines = format_pv_user_list(users, self.cfg.pv_unknown_name)
+        chunks = chunk_lines(lines, self.cfg.max_message_chars)
+        log.info("دستور «%s» → %s کاربر در %s پیام",
+                 self.cfg.pv_list_command, len(users), len(chunks))
+        for report in await self.sender.send_text_chunked(
+            client, await self._peer_of(event), chunks
+        ):
+            self._log_report(report)
 
     # ------------------------------------------------------------ دستور ai cod
     async def _handle_owner_command(self, client, event) -> None:
