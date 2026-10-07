@@ -15,11 +15,24 @@ MTProto (فورک Telethon) برای سروش پلاس است و با WebSocket 
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.environ.get("ACOD_DATA_DIR", BASE_DIR / "data"))
+
+
+def _env_str(*names: str) -> str | None:
+    """اولین متغیر محیطی موجود و «غیرخالی» را برمی‌گرداند (وگرنه None).
+
+    برای مقادیر Secret مثل Cloudflare استفاده می‌شود؛ رشته‌ی خالی/فقط‌فاصله
+    به‌معنای «تنظیم‌نشده» است.
+    """
+    for name in names:
+        value = (os.environ.get(name) or "").strip()
+        if value:
+            return value
+    return None
 
 
 def load_env_file(path: str | Path | None = None, *, override: bool = False) -> int:
@@ -163,8 +176,15 @@ class Config:
     max_message_chars: int = MAX_MESSAGE_CHARS
 
     # --- هوش مصنوعی (Cloudflare Workers AI) ---
-    cloudflare_account_id: str | None = None
-    cloudflare_api_token: str | None = None
+    # این دو مقدار Secret هستند و از `.env`/محیط می‌آیند؛ چون default_factory دارند،
+    # هم `Config()` و هم `Config.from_env()` مقدار واقعی را می‌گیرند
+    # (پیش از این فقط `from_env()` آن‌ها را map می‌کرد و `Config()` همیشه None می‌داد).
+    cloudflare_account_id: str | None = field(
+        default_factory=lambda: _env_str("CLOUDFLARE_ACCOUNT_ID")
+    )
+    cloudflare_api_token: str | None = field(
+        default_factory=lambda: _env_str("CLOUDFLARE_API_TOKEN")
+    )
     ai_model: str = AI_MODEL
     ai_online_command: str = AI_ONLINE_COMMAND
     ai_of_command: str = AI_OF_COMMAND

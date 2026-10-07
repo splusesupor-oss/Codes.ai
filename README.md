@@ -550,13 +550,13 @@ python manage.py reset-owner --yes  # فقط برای تست
 ## ۷. تست‌ها
 
 ```bash
-./run_all_tests.sh          # یا: python -m unittest discover -s tests -t . -v   (198 تست)
+./run_all_tests.sh          # یا: python -m unittest discover -s tests -t . -v   (203 تست)
 ```
 
 خروجی واقعی اجرای تست‌ها در همین محیط:
 
 ```
-Ran 198 tests in 0.570s
+Ran 203 tests in 0.587s
 OK
 ```
 
@@ -661,7 +661,7 @@ OK
 | `ACOD_PV_UNKNOWN_NAME` | `کاربر بدون نام` | نام جایگزین وقتی نام کاربر خالی است |
 | `ACOD_MAX_MESSAGE_CHARS` | `3500` | سقف طول هر پیام (برای تکه‌تکه‌کردن لیست بلند) |
 | `ACOD_QUOTE_MODE` | `entity` | `entity` (نقل‌قول شیشه‌ای داخل پیام) / `reply` (ریپلای + quote_text) / `off` |
-| `CLOUDFLARE_ACCOUNT_ID` | — | شناسه‌ی حساب Cloudflare (برای AI؛ داخل کد نیست، فقط `.env`) |
+| `CLOUDFLARE_ACCOUNT_ID` | — | شناسه‌ی حساب Cloudflare (برای AI؛ داخل کد نیست، فقط `.env`) — هم `Config()` و هم `Config.from_env()` آن را می‌خوانند |
 | `CLOUDFLARE_API_TOKEN` | — | توکن Workers AI (برای AI؛ داخل کد نیست، فقط `.env`) |
 | `ACOD_AI_MODEL` | `@cf/zai-org/glm-4.7-flash` | مدل Workers AI |
 | `ACOD_AI_DAILY_QUOTA` | `5000` | سهمیه‌ی داخلی روزانه‌ی **هر گروه** (روز UTC، مستقل از گروه‌های دیگر) |

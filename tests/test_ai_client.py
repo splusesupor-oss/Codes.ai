@@ -253,6 +253,124 @@ class TestEnvFile(unittest.TestCase):
                 self.assertFalse(CloudflareAI(value, value, "m").configured)
         self.assertTrue(CloudflareAI("acct-123", "tok-456", "m").configured)
 
+    def test_config_constructor_reads_cloudflare_from_environment(self):
+        """علت باگ قبلی: Config() فیلدهای Cloudflare را از env نمی‌خواند (فقط from_env این کار را می‌کرد)."""
+        import os
+
+        keys = ("CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN")
+        old = {k: os.environ.get(k) for k in keys}
+        try:
+            os.environ["CLOUDFLARE_ACCOUNT_ID"] = "dummy-account-for-test"
+            os.environ["CLOUDFLARE_API_TOKEN"] = "dummy-token-for-test"
+
+            cfg = config_module.Config()                       # ← سازنده‌ی ساده
+            self.assertEqual(cfg.cloudflare_account_id, "dummy-account-for-test")
+            self.assertEqual(cfg.cloudflare_api_token, "dummy-token-for-test")
+            self.assertTrue(CloudflareAI(cfg.cloudflare_account_id,
+                                         cfg.cloudflare_api_token, cfg.ai_model).configured)
+
+            from_env = config_module.Config.from_env()          # ← رفتار قبلی هم حفظ شده
+            self.assertEqual(from_env.cloudflare_account_id, "dummy-account-for-test")
+            self.assertEqual(from_env.cloudflare_api_token, "dummy-token-for-test")
+        finally:
+            for k, v in old.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+    def test_config_constructor_is_none_when_environment_is_empty(self):
+        import os
+
+        keys = ("CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN")
+        old = {k: os.environ.get(k) for k in keys}
+        try:
+            for k in keys:
+                os.environ.pop(k, None)
+            cfg = config_module.Config()
+            self.assertIsNone(cfg.cloudflare_account_id)
+            self.assertIsNone(cfg.cloudflare_api_token)
+        finally:
+            for k, v in old.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+    def test_empty_string_counts_as_not_configured(self):
+        import os
+
+        keys = ("CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN")
+        old = {k: os.environ.get(k) for k in keys}
+        try:
+            os.environ["CLOUDFLARE_ACCOUNT_ID"] = "   "
+            os.environ["CLOUDFLARE_API_TOKEN"] = ""
+            cfg = config_module.Config()
+            self.assertIsNone(cfg.cloudflare_account_id)
+            self.assertIsNone(cfg.cloudflare_api_token)
+            self.assertFalse(CloudflareAI(cfg.cloudflare_account_id or "",
+                                          cfg.cloudflare_api_token or "", cfg.ai_model).configured)
+        finally:
+            for k, v in old.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+    def test_explicit_arguments_win_over_environment(self):
+        import os
+
+        keys = ("CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN")
+        old = {k: os.environ.get(k) for k in keys}
+        try:
+            os.environ["CLOUDFLARE_ACCOUNT_ID"] = "env-account"
+            os.environ["CLOUDFLARE_API_TOKEN"] = "env-token"
+            cfg = config_module.Config(cloudflare_account_id="explicit-account")
+            self.assertEqual(cfg.cloudflare_account_id, "explicit-account")
+            self.assertEqual(cfg.cloudflare_api_token, "env-token")   # فقط فیلد داده‌شده override می‌شود
+        finally:
+            for k, v in old.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+    def test_env_file_to_config_end_to_end(self):
+        """سناریوی واقعی کاربر: load_env_file() سپس Config() باید «True True» بدهد."""
+        import os
+
+        keys = ("CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN")
+        old = {k: os.environ.get(k) for k in keys}
+        with tempfile.TemporaryDirectory() as tmp:
+            env = Path(tmp) / "dotenv"
+            env.write_text(
+                "# مقادیر ساختگی برای تست\n"
+                "CLOUDFLARE_ACCOUNT_ID=cfg-check-account\n"
+                "CLOUDFLARE_API_TOKEN=cfg-check-token\n",
+                encoding="utf-8",
+            )
+            for k in keys:
+                os.environ.pop(k, None)
+            try:
+                config_module.load_env_file(env)
+                cfg = config_module.Config()        # ← همان الگویی که در گزارش کاربر خطا می‌داد
+                self.assertTrue(bool(cfg.cloudflare_account_id))
+                self.assertTrue(bool(cfg.cloudflare_api_token))
+                self.assertTrue(CloudflareAI(cfg.cloudflare_account_id, cfg.cloudflare_api_token,
+                                             cfg.ai_model).configured)
+                # و سایر تنظیمات دقیقاً مثل قبل می‌مانند
+                self.assertEqual(cfg.owner_command, "ai cod")
+                self.assertEqual(cfg.kodrez_command, "کدرز")
+                self.assertEqual(cfg.pv_count_command, "تعداد اعضا")
+                self.assertEqual(cfg.ai_daily_quota, 5000)
+                self.assertEqual(cfg.ai_model, "@cf/zai-org/glm-4.7-flash")
+            finally:
+                for k, v in old.items():
+                    if v is None:
+                        os.environ.pop(k, None)
+                    else:
+                        os.environ[k] = v
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
