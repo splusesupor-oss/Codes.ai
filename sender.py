@@ -150,6 +150,46 @@ class BrandSender:
             log.warning("ارسال پیام متنی ناموفق بود → %s", err)
             return report
 
+    async def send_styled(self, client, chat, text: str) -> SendReport:
+        """ارسال یک متن دلخواه با «قالب استاندارد پروژه»: نقل‌قول شیشه‌ای + Bold.
+
+        همان زنجیره‌ی fallback پیام معرفی اجرا می‌شود:
+            blockquote+bold → bold-only → متن ساده
+        بنابراین اگر سرور سروش entity نقل‌قول را نپذیرد، ارسال شکست نمی‌خورد.
+        """
+        peer = await self._resolve_peer(client, chat)
+        plan = [
+            ("blockquote+bold", brand.quote_bold_entities(text, quote=True, bold=True)),
+            ("bold-only", brand.quote_bold_entities(text, quote=False, bold=True)),
+            ("plain", []),
+        ]
+        report = SendReport(ok=False, attempts=[])
+
+        for name, entities in plan:
+            try:
+                result = await client(
+                    functions.messages.SendMessageRequest(
+                        peer=peer,
+                        message=text,
+                        entities=entities or None,
+                        no_webpage=not self.cfg.link_preview,
+                    )
+                )
+                report.ok = True
+                report.mode = name
+                report.message_id = _extract_message_id(result)
+                report.attempts.append({"mode": name, "ok": True})
+                log.info("پیام قالب‌دار ارسال شد (حالت: %s)", name)
+                return report
+            except Exception as exc:  # noqa: BLE001 — هر خطای سرور باید fallback را فعال کند
+                err = f"{type(exc).__name__}: {exc}"
+                report.attempts.append({"mode": name, "ok": False, "error": err})
+                report.error = err
+                log.warning("تلاش «%s» ناموفق بود → %s", name, err)
+
+        log.error("ارسال پیام قالب‌دار در همه‌ی حالت‌ها ناموفق بود: %s", report.error)
+        return report
+
     async def send_text_chunked(
         self, client, chat, chunks: list[str]
     ) -> list[SendReport]:

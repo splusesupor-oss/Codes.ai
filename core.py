@@ -28,6 +28,7 @@ import re
 import unicodedata
 from typing import Optional
 
+import brand
 from config import Config
 from sender import BrandSender, SendReport
 from storage import OwnerStore
@@ -87,6 +88,21 @@ def match_pv_admin_command(text: str, cfg: Config) -> Optional[str]:
         return "count"
     if given & _normalization_variants(cfg.pv_list_command):
         return "list"
+    return None
+
+
+def match_menu_option(text: str) -> Optional[str]:
+    """تشخیص یکی از ۶ گزینه‌ی منوی PV.
+
+    متن گزینه‌ها در `brand.MENU_OPTIONS` است و مقایسه با همان نرمال‌سازی
+    دستورهای دیگر انجام می‌شود (فاصله‌های اضافی، نیم‌فاصله، حروف عربی/فارسی).
+    """
+    if not text or not text.strip():
+        return None
+    given = _normalization_variants(text)
+    for option in brand.MENU_OPTIONS:
+        if given & _normalization_variants(option):
+            return option
     return None
 
 
@@ -177,29 +193,33 @@ class BotCore:
     # ------------------------------------------------------- پیام خصوصی (PV)
     async def _handle_private(self, client, event) -> None:
         """مسیر پیام خصوصی:
-        ۱) ثبت یک‌بارِ کاربر PV در storage دائمی
-        ۲) اگر فرستنده مالک سراسری باشد و دستور مدیریتی بفرستد → آمار اعضا
-        ۳) در غیر این صورت → همان پاسخ خودکار پیام معرفی (رفتار قبلی، دست‌نخورده)
+
+        ۱) ثبت یک‌بارِ کاربر PV در storage دائمی (کلید = user_id واقعی)
+        ۲) دستورهای مدیریتی مالک سراسری («تعداد اعضا» / «لیست اعضا») — مثل قبل
+        ۳) «اولین پیام» همان کاربر → معرفی (یک‌بار) + منوی انتخاب (یک‌بار)
+        ۴) پیام‌های بعدی: اگر یکی از ۶ گزینه‌ی منو بود → فقط پاسخ همان گزینه
+        ۵) متن دیگر → پاسخ جدیدی ساخته نمی‌شود و معرفی/منو هم تکرار نمی‌شود
         """
         sender_id = int(getattr(event, "sender_id", 0) or 0)
+        text = getattr(event, "raw_text", None) or ""
 
-        # (۱) ثبت کاربر PV — هر کاربر فقط یک‌بار؛ پیام‌های بعدی تعداد را زیاد نمی‌کند.
-        #     کاربران گروهی اینجا ثبت نمی‌شوند (این تابع فقط در مسیر PV صدا زده می‌شود).
+        # (۱) ثبت کاربر PV — هر کاربر فقط یک‌بار (کلید: user_id؛ تغییر username
+        #     کاربر را «جدید» نمی‌کند). مقدار بازگشتی «اولین پیام» بودن را می‌گوید و
+        #     چون در SQLite دائمی ذخیره می‌شود، بعد از restart هم از بین نمی‌رود.
+        is_first_message = False
         if sender_id:
-            is_new = self.store.register_pv_user(
+            is_first_message = self.store.register_pv_user(
                 sender_id,
                 username=self._username(event),
                 display_name=self._display_name(event),
             )
-            if is_new:
+            if is_first_message:
                 log.info("کاربر جدید PV ثبت شد: user_id=%s (تعداد: %s)",
                          sender_id, self.store.count_pv_users())
 
-        # (۲) دستورهای مدیریتی — فقط مالک سراسری و فقط در PV
+        # (۲) دستورهای مدیریتی — فقط مالک سراسری و فقط در PV (بدون تغییر)
         if sender_id and self.store.is_owner(sender_id):
-            command = match_pv_admin_command(
-                getattr(event, "raw_text", None) or "", self.cfg
-            )
+            command = match_pv_admin_command(text, self.cfg)
             if command == "count":
                 await self._send_pv_count(client, event)
                 return
@@ -207,12 +227,40 @@ class BotCore:
                 await self._send_pv_list(client, event)
                 return
 
-        # (۳) پاسخ خودکار PV (بدون تغییر نسبت به قبل)
         if not self.cfg.private_auto_reply:
             return
 
-        log.info("پیام خصوصی از کاربر %s → ارسال پیام معرفی", sender_id)
+        # (۳) اولین پیام این کاربر → معرفی + منو (هرکدام فقط یک‌بار)
+        if is_first_message:
+            await self._send_intro_and_menu(client, event)
+            return
+
+        # (۴) پیام‌های بعدی: یکی از گزینه‌های منو؟ → فقط پاسخ همان گزینه
+        option = match_menu_option(text)
+        if option:
+            await self._send_pv_answer(client, event, option)
+            return
+
+        # (۵) متن دیگر: پاسخ جدیدی اختراع نمی‌شود؛ معرفی و منو هم تکرار نمی‌شوند.
+        log.debug("پیام PV بدون گزینه‌ی منو از کاربر %s نادیده گرفته شد", sender_id)
+
+    async def _send_intro_and_menu(self, client, event) -> None:
+        """اولین پیام کاربر PV: پیام معرفی (فقط یک‌بار) سپس منوی انتخاب (فقط یک‌بار)."""
+        log.info("اولین پیام کاربر %s در PV → معرفی + منو",
+                 getattr(event, "sender_id", None))
         self._log_report(await self._send_brand(client, event))
+        self._log_report(
+            await self.sender.send_styled(client, await self._peer_of(event), brand.MENU_TEXT)
+        )
+
+    async def _send_pv_answer(self, client, event, option: str) -> None:
+        """پاسخ یک گزینه‌ی منو — با همان قالب (نقل‌قول شیشه‌ای + Bold)."""
+        text = brand.PV_REPLIES[option]
+        log.info("گزینه «%s» از کاربر %s → ارسال پاسخ",
+                 option, getattr(event, "sender_id", None))
+        self._log_report(
+            await self.sender.send_styled(client, await self._peer_of(event), text)
+        )
 
     # ------------------------------------------- آمار کاربران PV (فقط مالک)
     async def _send_pv_count(self, client, event) -> None:

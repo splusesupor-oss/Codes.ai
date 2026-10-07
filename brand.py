@@ -116,6 +116,75 @@ def build_quote_entities() -> List[object]:
     return [MessageEntityBold(offset=0, length=utf16_len(QUOTE_LINE))]
 
 
+# ---------------------------------------------------------------------------
+# منوی پیام خصوصی و پاسخ دستورهای PV
+# (فقط متن و قالب؛ خودِ منطق در core.py است)
+# ---------------------------------------------------------------------------
+MENU_TITLE = "برای انتخاب فقط دستورات زیر را ارسال کنید"
+MENU_OPTIONS = [
+    "سازنده",
+    "کانال روباه",
+    "ربات پشتیبانی",
+    "سایت خرید",
+    "کانال دانلود",
+    "ربات روباه",
+]
+MENU_TEXT = MENU_TITLE + "\n\n" + "\n".join(MENU_OPTIONS)
+
+PV_REPLIES = {
+    "سازنده": "@osine2",
+    "کانال روباه": "@ai_fox",
+    "ربات پشتیبانی": "@Aifox_bot",
+    "سایت خرید": "https://foxbot.osine2.workers.dev/",
+    "کانال دانلود": "https://splus.ir/Orderawebsite",
+    "ربات روباه": (
+        "ربات های روباه"
+        "\n\n"
+        "نسخه یک🔹 @fox_bot\n"
+        "نسخه دو🔹 @aifox\n"
+        "نسخه سه🔹 @bot_fox"
+    ),
+}
+
+
+# ---------------------------------------------------------------------------
+# ابزار قالب‌بندی عمومی (همان نقل‌قول شیشه‌ای + Bold پروژه، برای هر متنی)
+# ---------------------------------------------------------------------------
+def _line_spans(text: str):
+    """(خط، اندیس شروع، اندیس پایان) برای هر خط متن."""
+    start = 0
+    for line in text.split(NL):
+        yield line, start, start + len(line)
+        start += len(line) + 1
+
+
+def quote_bold_entities(text: str, *, quote: bool = True, bold: bool = True) -> List[object]:
+    """قالب استاندارد پروژه برای یک متن دلخواه:
+
+    * کل متن داخل یک «نقل‌قول شیشه‌ای» (MessageEntityBlockquote)
+    * هر خط غیرخالی، Bold (MessageEntityBold)
+
+    آفست‌ها مثل بقیه‌ی پروژه بر حسب واحد UTF-16 محاسبه می‌شوند (ایموجی‌ها ایمن هستند).
+    """
+    if not text:
+        return []
+    MessageEntityBlockquote, MessageEntityBold = _entities()
+    entities: List[object] = []
+
+    if quote:
+        entities.append(MessageEntityBlockquote(offset=0, length=utf16_len(text)))
+    if bold:
+        for line, start, _end in _line_spans(text):
+            if line.strip():
+                entities.append(
+                    MessageEntityBold(
+                        offset=utf16_offset(text, start), length=utf16_len(line)
+                    )
+                )
+    entities.sort(key=lambda e: e.offset)
+    return entities
+
+
 def entity_summary(entities: List[object]) -> List[dict]:
     """خلاصه‌ی خوانا از entityها (برای لاگ و تست)."""
     return [

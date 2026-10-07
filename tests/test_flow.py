@@ -162,8 +162,9 @@ class TestGuards(FlowTestCase):
         # ولی طبق رفتار جدید، پیام معرفی برای همان کاربر ارسال می‌شود.
         run(self.send("ai cod", user_id=USER_1, chat_id=USER_1, is_group=False))
         self.assertIsNone(self.store.get_owner())
-        self.assertEqual(len(self.client.requests), 1)
+        self.assertEqual(len(self.client.requests), 2)          # معرفی + منو
         self.assertEqual(self.client.requests[0].message, brand.FULL_TEXT)
+        self.assertEqual(self.client.requests[1].message, brand.MENU_TEXT)
 
     def test_unrelated_text_is_ignored(self):
         run(self.send("سلام، ai cod چیه؟", user_id=USER_1, chat_id=GROUP_A))
@@ -222,33 +223,39 @@ class TestPrivateChat(FlowTestCase):
         return sorted((type(e).__name__, e.offset, e.length) for e in entities)
 
     def test_10_private_message_triggers_introduction(self):
+        # اولین پیام PV → معرفی (همان قالب قبلی) + منوی انتخاب؛ هرکدام یک‌بار
         run(self.send("سلام، قیمت سایت چنده؟", user_id=USER_2, chat_id=USER_2, is_group=False))
 
-        self.assertEqual(len(self.client.requests), 1, "باید دقیقاً یک پاسخ ارسال شود")
+        self.assertEqual(len(self.client.requests), 2, "باید معرفی + منو ارسال شود")
         sent = self.client.sent_messages()[0]
         self.assertEqual(sent["message"], brand.FULL_TEXT)
         kinds = [type(e).__name__ for e in sent["entities"]]
         self.assertIn("MessageEntityBlockquote", kinds)          # نقل‌قول شیشه‌ای
         self.assertEqual(kinds.count("MessageEntityBold"), len(brand.BODY_LINES))
         self.assertIn(brand.LINK_LINE, sent["message"])
+        self.assertEqual(self.client.sent_messages()[1]["message"], brand.MENU_TEXT)
 
     def test_private_message_without_text_still_triggers(self):
         # «مهم نیست متن پیامش چیست» — حتی پیام بدون متن (مثلاً مدیا)
         run(self.send("", user_id=USER_3, chat_id=USER_3, is_group=False))
-        self.assertEqual(len(self.client.requests), 1)
+        self.assertEqual(len(self.client.requests), 2)          # معرفی + منو
         self.assertEqual(self.client.requests[0].message, brand.FULL_TEXT)
+        self.assertEqual(self.client.requests[1].message, brand.MENU_TEXT)
 
     def test_private_reply_goes_only_to_the_sender(self):
         run(self.send("هر متنی", user_id=USER_2, chat_id=USER_2, is_group=False))
 
-        req = self.client.requests[0]
-        self.assertIsInstance(req.peer, types.InputPeerUser)
-        self.assertEqual(req.peer.user_id, USER_2)      # فقط برای همان کاربر
-        self.assertEqual(len(self.client.requests), 1)  # و برای هیچ چت دیگری نه
+        self.assertEqual(len(self.client.requests), 2)          # معرفی + منو
+        for req in self.client.requests:                        # همه فقط برای همان کاربر
+            self.assertIsInstance(req.peer, types.InputPeerUser)
+            self.assertEqual(req.peer.user_id, USER_2)
 
     def test_private_kodrez_sends_exactly_one_intro(self):
+        # «کدرز» فقط دستور گروهی است؛ در PV گزینه‌ی منو نیست →
+        # کاربر فقط همان معرفی + منوی اولین پیام را می‌گیرد (بدون پاسخ اضافه)
         run(self.send("کدرز", user_id=USER_2, chat_id=USER_2, is_group=False))
-        self.assertEqual(len(self.client.requests), 1)   # دوبار ارسال نمی‌شود
+        self.assertEqual([r.message for r in self.client.requests],
+                         [brand.FULL_TEXT, brand.MENU_TEXT])
         self.assertIsNone(self.store.get_owner())
 
     def test_private_ai_cod_never_sets_owner(self):

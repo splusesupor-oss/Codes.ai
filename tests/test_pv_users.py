@@ -200,16 +200,17 @@ class TestOwnerCommands(PvUsersTestCase):
 
     def test_25_non_owner_cannot_use_admin_commands(self):
         self.make_owner()
-        run(self.pv("سلام", user_id=USER_2, username="osine"))
+        run(self.pv("سلام", user_id=USER_2, username="osine"))   # اولین پیام → ثبت
+        run(self.pv("سلام", user_id=USER_3))                     # اولین پیام → ثبت
         self.client.requests.clear()
 
+        # «لیست اعضا» و «تعداد اعضا» نه گزینه‌ی منو هستند و نه برای غیرمالک اجرا می‌شوند
         run(self.pv("لیست اعضا", user_id=USER_2))
         run(self.pv("تعداد اعضا", user_id=USER_3))
+        run(self.pv("تعداد اعضا", user_id=USER_2))
 
-        # کاربر غیرمالک فقط همان پاسخ خودکار معرفی را می‌گیرد، نه آمار
-        for req in self.client.requests:
-            self.assertEqual(req.message, brand.FULL_TEXT)
-        self.assertEqual(len(self.client.requests), 2)
+        self.assertEqual(self.client.requests, [],
+                         "کاربر غیرمالک نباید هیچ پاسخ مدیریتی/آماری بگیرد")
 
     def test_26_admin_commands_are_ignored_in_groups(self):
         self.make_owner()
@@ -299,8 +300,8 @@ class TestRegression(PvUsersTestCase):
 
     def test_33_pv_auto_reply_unchanged_for_regular_users(self):
         run(self.pv("سلام", user_id=USER_2, username="osine"))
-        self.assertEqual(len(self.client.requests), 1)
-        req = self.client.requests[0]
+        self.assertEqual(len(self.client.requests), 2)      # معرفی + منو
+        req = self.client.requests[0]                       # معرفی، با همان قالب قبلی
         self.assertEqual(req.message, brand.FULL_TEXT)
         kinds = [type(e).__name__ for e in req.entities]
         self.assertIn("MessageEntityBlockquote", kinds)
@@ -318,8 +319,10 @@ class TestRegression(PvUsersTestCase):
         before = len(self.client.requests)
         run(self.pv("سلام", user_id=USER_2))
 
-        self.assertEqual(len(self.client.requests), before + 1)
-        self.assertEqual(self.client.requests[-1].message, brand.FULL_TEXT)
+        # کاربر جدید → معرفی + منو (دو پیام)؛ دستور مالک هم همچنان کار می‌کند
+        self.assertEqual(len(self.client.requests), before + 2)
+        self.assertEqual(self.client.requests[-2].message, brand.FULL_TEXT)
+        self.assertEqual(self.client.requests[-1].message, brand.MENU_TEXT)
 
 
 if __name__ == "__main__":
