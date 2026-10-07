@@ -31,7 +31,12 @@ KODREZ_COMMAND = "کدرز"       # دستور معرفی؛ برای همه آز
 # پرچم‌های رفتاری
 # ---------------------------------------------------------------------------
 # «اولین کاربری که در هر گروهی این دستور را ارسال کند» → پیش‌فرض: فقط گروه‌ها
+# توجه: این پرچم فقط روی «دستورها» (ai cod و کدرز) اثر دارد.
+# مسیر پیام خصوصی (PV) از این پرچم مستقل است و با PRIVATE_AUTO_REPLY کنترل می‌شود.
 GROUPS_ONLY = True
+
+# پیام خصوصی: هر PV ورودی (بدون نیاز به دستور) → پاسخ با همان پیام معرفی
+PRIVATE_AUTO_REPLY = True
 
 # پیش‌نمایش لینک برای پیام برند نمایش داده شود؟
 LINK_PREVIEW = False
@@ -77,6 +82,7 @@ class Config:
     owner_command: str = OWNER_COMMAND
     kodrez_command: str = KODREZ_COMMAND
     groups_only: bool = GROUPS_ONLY
+    private_auto_reply: bool = PRIVATE_AUTO_REPLY
     link_preview: bool = LINK_PREVIEW
     quote_mode: str = QUOTE_MODE
     quote_reply_fallback_to_entity: bool = QUOTE_REPLY_FALLBACK_TO_ENTITY
@@ -92,6 +98,8 @@ class Config:
             owner_command=os.environ.get("ACOD_OWNER_COMMAND", OWNER_COMMAND),
             kodrez_command=os.environ.get("ACOD_KODREZ_COMMAND", KODREZ_COMMAND),
             groups_only=os.environ.get("ACOD_GROUPS_ONLY", "1") not in ("0", "false", "False"),
+            private_auto_reply=os.environ.get("ACOD_PRIVATE_AUTO_REPLY", "1")
+            not in ("0", "false", "False"),
             link_preview=os.environ.get("ACOD_LINK_PREVIEW", "0") in ("1", "true", "True"),
             quote_mode=os.environ.get("ACOD_QUOTE_MODE", QUOTE_MODE),
         )

@@ -1,12 +1,21 @@
 """
-منطق ربات: دو دستور، طبق دقیق نیازمندی‌ها.
+منطق ربات: دو دستور گروهی + یک رفتار خودکار در پیام خصوصی.
 
   ۱) «ai cod»  → اولین کاربری که این دستور را در هر گروهی بفرستد، برای همیشه
                  Global Owner می‌شود؛ هیچ کاربر دیگری در هیچ گروهی نمی‌تواند مالک شود.
                  بعد از ثبت موفق، پیام معرفی (فعال‌سازی) ارسال می‌شود.
+                 (فقط در گروه — در پیام خصوصی هرگز مالک ثبت نمی‌شود)
 
   ۲) «کدرز»    → هر کاربری در هر گروهی این را بفرستد، پیام معرفی با همان قالب
                  (نقل‌قول شیشه‌ای + Bold + لینک دست‌نخورده) ارسال می‌شود.
+
+  ۳) پیام خصوصی (PV) → هر پیام ورودی در چت خصوصی — بدون نیاز به هیچ دستوری و
+                 فارغ از متن پیام — پاسخِ همان پیام معرفی را برای همان کاربر می‌گیرد.
+                 تشخیص PV با API واقعی کتابخانه انجام می‌شود: `event.is_private`
+                 که در `splusthon/tl/custom/chatgetter.py` معادل
+                 `isinstance(_chat_peer, types.PeerUser)` است.
+
+نکته‌ی مهم: `groups_only` فقط روی «دستورها» اثر دارد؛ مسیر پیام خصوصی از آن مستقل است.
 
 این ماژول هیچ چیزی از شبکه را مستقیم صدا نمی‌زند؛ فقط از `client` و `event`
 استفاده می‌کند، بنابراین با یک کلاینت/ایونت جعلی هم کاملاً قابل تست است.
@@ -81,9 +90,18 @@ class BotCore:
     async def on_new_message(self, client, event) -> None:
         """هندلر اصلی — به events.NewMessage وصل می‌شود."""
         # پیام‌های خودمان (خروجی) نباید پردازش شوند؛ وگرنه حلقه‌ی بی‌پایان می‌شود.
+        # این بررسی، پاسخ خودکار PV ربات را هم از پردازش مجدد محافظت می‌کند.
         if getattr(event, "out", False):
             return
 
+        # --- مسیر ۱: پیام خصوصی (PV) → ارسال خودکار پیام معرفی، بدون نیاز به دستور ---
+        # تشخیص با API واقعی SPlusthon: `is_private` (↔ PeerUser بودن چت).
+        if getattr(event, "is_private", None) is True:
+            if self.cfg.private_auto_reply:
+                await self._handle_private(client, event)
+            return
+
+        # --- مسیر ۲: گروه‌ها → دستورها (بدون هیچ تغییری نسبت به قبل) ---
         text = getattr(event, "raw_text", None) or ""
         if not text.strip():
             return
@@ -101,6 +119,13 @@ class BotCore:
             await self._handle_owner_command(client, event)
         elif command == "kodrez":
             await self._handle_kodrez(client, event)
+
+    # ------------------------------------------------------- پیام خصوصی (PV)
+    async def _handle_private(self, client, event) -> None:
+        """هر پیام خصوصی ورودی → ارسال همان پیام معرفی برای همان کاربر."""
+        log.info("پیام خصوصی از کاربر %s → ارسال پیام معرفی",
+                 getattr(event, "sender_id", None))
+        self._log_report(await self._send_brand(client, event))
 
     # ------------------------------------------------------------ دستور ai cod
     async def _handle_owner_command(self, client, event) -> None:

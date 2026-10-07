@@ -24,7 +24,11 @@ class FakeClient:
         self._next_id = 100
 
     async def get_input_entity(self, chat):
-        return types.InputPeerChat(chat_id=abs(int(chat)))
+        # مثل خود SPlusthon: شناسه‌ی مثبت = کاربر (PV)، منفی = گروه
+        chat_id = int(chat)
+        if chat_id > 0:
+            return types.InputPeerUser(user_id=chat_id, access_hash=0)
+        return types.InputPeerChat(chat_id=abs(chat_id))
 
     async def __call__(self, request, ordered=False):
         if self.reject_all:
@@ -90,6 +94,7 @@ class FakeEvent:
         chat_id: int,
         msg_id: int = 1,
         is_group: bool = True,
+        is_private: Optional[bool] = None,
         out: bool = False,
         username: Optional[str] = None,
         display_name: Optional[str] = None,
@@ -99,6 +104,8 @@ class FakeEvent:
         self.chat_id = chat_id
         self.id = msg_id
         self.is_group = is_group
+        # مطابق SPlusthon: is_private ↔ PeerUser بودن چت (در PV، chat_id همان شناسه‌ی کاربر است)
+        self.is_private = (not is_group) if is_private is None else is_private
         self.out = out
         self.sender = FakeSender(
             user_id,
@@ -107,4 +114,6 @@ class FakeEvent:
         )
 
     async def get_input_chat(self):
+        if self.is_private:
+            return types.InputPeerUser(user_id=int(self.chat_id), access_hash=0)
         return types.InputPeerChat(chat_id=abs(int(self.chat_id)))

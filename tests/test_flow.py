@@ -157,10 +157,13 @@ class TestGuards(FlowTestCase):
         self.assertIsNone(self.store.get_owner())
         self.assertEqual(len(self.client.requests), 0)
 
-    def test_private_chats_are_ignored_by_default(self):
+    def test_private_ai_cod_does_not_set_owner_but_sends_intro(self):
+        # «ai cod» فقط در گروه مالک تعیین می‌کند؛ در PV مالک ثبت نمی‌شود
+        # ولی طبق رفتار جدید، پیام معرفی برای همان کاربر ارسال می‌شود.
         run(self.send("ai cod", user_id=USER_1, chat_id=USER_1, is_group=False))
         self.assertIsNone(self.store.get_owner())
-        self.assertEqual(len(self.client.requests), 0)
+        self.assertEqual(len(self.client.requests), 1)
+        self.assertEqual(self.client.requests[0].message, brand.FULL_TEXT)
 
     def test_unrelated_text_is_ignored(self):
         run(self.send("سلام، ai cod چیه؟", user_id=USER_1, chat_id=GROUP_A))
@@ -209,3 +212,91 @@ class TestFormattingFallback(FlowTestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestPrivateChat(FlowTestCase):
+    """رفتار جدید: هر پیام خصوصی ورودی → همان پیام معرفی (بدون نیاز به دستور)."""
+
+    @staticmethod
+    def _entity_signature(entities):
+        return sorted((type(e).__name__, e.offset, e.length) for e in entities)
+
+    def test_10_private_message_triggers_introduction(self):
+        run(self.send("سلام، قیمت سایت چنده؟", user_id=USER_2, chat_id=USER_2, is_group=False))
+
+        self.assertEqual(len(self.client.requests), 1, "باید دقیقاً یک پاسخ ارسال شود")
+        sent = self.client.sent_messages()[0]
+        self.assertEqual(sent["message"], brand.FULL_TEXT)
+        kinds = [type(e).__name__ for e in sent["entities"]]
+        self.assertIn("MessageEntityBlockquote", kinds)          # نقل‌قول شیشه‌ای
+        self.assertEqual(kinds.count("MessageEntityBold"), len(brand.BODY_LINES))
+        self.assertIn(brand.LINK_LINE, sent["message"])
+
+    def test_private_message_without_text_still_triggers(self):
+        # «مهم نیست متن پیامش چیست» — حتی پیام بدون متن (مثلاً مدیا)
+        run(self.send("", user_id=USER_3, chat_id=USER_3, is_group=False))
+        self.assertEqual(len(self.client.requests), 1)
+        self.assertEqual(self.client.requests[0].message, brand.FULL_TEXT)
+
+    def test_private_reply_goes_only_to_the_sender(self):
+        run(self.send("هر متنی", user_id=USER_2, chat_id=USER_2, is_group=False))
+
+        req = self.client.requests[0]
+        self.assertIsInstance(req.peer, types.InputPeerUser)
+        self.assertEqual(req.peer.user_id, USER_2)      # فقط برای همان کاربر
+        self.assertEqual(len(self.client.requests), 1)  # و برای هیچ چت دیگری نه
+
+    def test_private_kodrez_sends_exactly_one_intro(self):
+        run(self.send("کدرز", user_id=USER_2, chat_id=USER_2, is_group=False))
+        self.assertEqual(len(self.client.requests), 1)   # دوبار ارسال نمی‌شود
+        self.assertIsNone(self.store.get_owner())
+
+    def test_private_ai_cod_never_sets_owner(self):
+        run(self.send("ai cod", user_id=USER_2, chat_id=USER_2, is_group=False))
+        self.assertIsNone(self.store.get_owner())
+
+    def test_private_outgoing_is_ignored(self):
+        # جلوگیری از loop: پاسخ خودِ یوزربات نباید دوباره پردازش شود
+        run(self.send(brand.FULL_TEXT, user_id=USER_1, chat_id=USER_2,
+                      is_group=False, out=True))
+        self.assertEqual(len(self.client.requests), 0)
+
+    def test_private_and_group_intro_are_byte_identical(self):
+        run(self.send("کدرز", user_id=USER_2, chat_id=GROUP_A))
+        run(self.send("سلام", user_id=USER_3, chat_id=USER_3, is_group=False))
+
+        group_req, private_req = self.client.requests[0], self.client.requests[1]
+        self.assertEqual(group_req.message, private_req.message)
+        self.assertEqual(
+            self._entity_signature(group_req.entities),
+            self._entity_signature(private_req.entities),
+            "قالب Blockquote + Bold در گروه و PV باید دقیقاً یکسان باشد",
+        )
+
+    def test_private_feature_can_be_disabled_by_config(self):
+        cfg = dataclasses.replace(self.cfg, private_auto_reply=False)
+        core = BotCore(cfg, self.store, BrandSender(cfg))
+        event = FakeEvent("سلام", user_id=USER_2, chat_id=USER_2, is_group=False)
+        run(core.on_new_message(self.client, event))
+        self.assertEqual(len(self.client.requests), 0)
+
+
+class TestGroupRegression(FlowTestCase):
+    """اطمینان از اینکه رفتار گروه‌ها تغییر نکرده است."""
+
+    def test_group_message_without_commands_is_still_ignored(self):
+        run(self.send("سلام به همه", user_id=USER_2, chat_id=GROUP_A))
+        run(self.send("ai cod چیه؟", user_id=USER_3, chat_id=GROUP_B))
+        self.assertEqual(len(self.client.requests), 0)
+        self.assertIsNone(self.store.get_owner())
+
+    def test_kodrez_in_group_still_works(self):
+        run(self.send("کدرز", user_id=USER_2, chat_id=GROUP_A))
+        self.assertEqual(len(self.client.requests), 1)
+        self.assertEqual(self.client.requests[0].message, brand.FULL_TEXT)
+
+    def test_ai_cod_in_group_still_sets_owner_once(self):
+        run(self.send("ai cod", user_id=USER_1, chat_id=GROUP_A))
+        run(self.send("ai cod", user_id=USER_2, chat_id=GROUP_B))
+        self.assertEqual(self.store.get_owner().user_id, USER_1)
+        self.assertEqual(len(self.client.requests), 1)

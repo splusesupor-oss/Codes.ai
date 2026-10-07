@@ -1,6 +1,6 @@
 # ربات «ai cod» سروش پلاس — بدون Bot Token
 
-ربات بسیار ساده با **دو دستور** («`ai cod`» و «`کدرز`») که مستقیم با **حساب کاربری سروش پلاس**
+ربات بسیار ساده با **دو دستور گروهی** («`ai cod`» و «`کدرز`») **+ پاسخ خودکار در پیام خصوصی** که مستقیم با **حساب کاربری سروش پلاس**
 به سرور سروش وصل می‌شود. در این پروژه **هیچ Bot Token، هیچ Telegram Bot API و هیچ سرویس واسطه‌ای**
 استفاده نشده است.
 
@@ -251,6 +251,24 @@ python bot.py
 هر کاربری در هر گروهی `کدرز` بفرستد، ربات همان پیام معرفی را با قالب یکسان ارسال می‌کند
 (بدون نیاز به مالک‌بودن).
 
+### مسیر ۳ — پیام خصوصی (PV / Direct Message)
+
+هر کاربری به حساب یوزربات **پیام خصوصی** بفرستد — **بدون نیاز به هیچ دستور و فارغ از متن پیام** —
+همان پیام معرفی برای **همان کاربر** ارسال می‌شود:
+
+* تشخیص PV با API واقعی کتابخانه انجام می‌شود: `event.is_private`
+  (در سورس: `splusthon/tl/custom/chatgetter.py` → `isinstance(self._chat_peer, types.PeerUser)`).
+* `GROUPS_ONLY` **فقط روی دستورها** اثر دارد: `ai cod` و `کدرز` همچنان فقط در گروه کار می‌کنند؛
+  مسیر PV از آن مستقل است (درخواست شماره‌ی ۹).
+* پاسخ فقط به همان چت/کاربر (`event.get_input_chat()` → `InputPeerUser` همان فرستنده) می‌رود.
+* برای جلوگیری از حلقه، پیام‌های `out` (خروجیِ خود یوزربات) هرگز پردازش نمی‌شوند.
+* در PV **هیچ ویژگی اضافه‌ای** نیست: نه پاسخ به متن کاربر، نه منو/دکمه، نه ذخیره‌ی اطلاعات کاربر —
+  فقط همان پیام معرفی با همان `brand`/`sender` گروه‌ها.
+* در PV هیچ مالکی ثبت نمی‌شود («`ai cod`» در PV فقط منجر به ارسال پیام معرفی می‌شود).
+* برای خاموش‌کردن این رفتار: `ACOD_PRIVATE_AUTO_REPLY=0`.
+
+---
+
 ### قالب پیام (دقیقاً همان چیزی که خواسته شد)
 
 ```
@@ -303,13 +321,13 @@ python manage.py reset-owner --yes  # فقط برای تست
 ## ۷. تست‌ها
 
 ```bash
-./run_all_tests.sh          # یا: python -m unittest discover -s tests -t . -v
+./run_all_tests.sh          # یا: python -m unittest discover -s tests -t . -v   (۴۹ تست)
 ```
 
 خروجی واقعی اجرای تست‌ها در همین محیط:
 
 ```
-Ran 38 tests in 0.07s
+Ran 49 tests in 0.09s
 OK
 ```
 
@@ -327,6 +345,13 @@ OK
 | صحت entityهای Bold/Blockquote و آفست UTF-16 | `tests/test_brand.py` |
 | زنجیره‌ی fallback وقتی سرور blockquote را رد کند | `test_fallback_when_server_rejects_blockquote` |
 | حالت نقل‌قول واقعی (`quote_text`) | `test_reply_quote_mode_builds_real_quote_reply` |
+| «پیام خصوصی → ارسال خودکار معرفی» | `test_10_private_message_triggers_introduction` |
+| «PV بدون متن (مدیا) هم پاسخ می‌گیرد» | `test_private_message_without_text_still_triggers` |
+| «پاسخ PV فقط به همان کاربر» | `test_private_reply_goes_only_to_the_sender` |
+| «ai cod در PV مالک تعیین نمی‌کند» | `test_private_ai_cod_never_sets_owner` / `test_private_ai_cod_does_not_set_owner_but_sends_intro` |
+| «outgoing خود ربات → بدون پاسخ (جلوگیری از loop)» | `test_private_outgoing_is_ignored` |
+| «پیام گروهی بدون دستور همچنان نادیده» | `test_group_message_without_commands_is_still_ignored` |
+| «یکسان‌بودن قالب گروه و PV» | `test_private_and_group_intro_are_byte_identical` |
 
 تست‌ها **آفلاین** هستند و برای اجرا به حساب واقعی نیازی ندارند (از `tests/fakes.py` استفاده می‌کنند).
 
@@ -342,7 +367,8 @@ OK
 | `ACOD_PHONE` / `ACOD_PASSWORD` | — | لاگین غیرتعاملی |
 | `ACOD_OWNER_COMMAND` | `ai cod` | متن دستور مالک |
 | `ACOD_KODREZ_COMMAND` | `کدرز` | متن دستور معرفی |
-| `ACOD_GROUPS_ONLY` | `1` | فقط گروه‌ها پردازش شوند |
+| `ACOD_GROUPS_ONLY` | `1` | دستورها (`ai cod`/`کدرز`) فقط در گروه پردازش شوند (بی‌اثر روی PV) |
+| `ACOD_PRIVATE_AUTO_REPLY` | `1` | هر پیام خصوصی ورودی → ارسال خودکار پیام معرفی |
 | `ACOD_QUOTE_MODE` | `entity` | `entity` (نقل‌قول شیشه‌ای داخل پیام) / `reply` (ریپلای + quote_text) / `off` |
 
 ---
@@ -394,6 +420,7 @@ OK
 | `ImportError: No module named 'aiohttp'` | `pip install aiohttp` (در Termux: `pkg install clang libffi openssl` سپس دوباره) |
 | `Wrong code. Retry.` هنگام ورود | کد منقضی شده؛ دوباره اجرا کنید |
 | `SessionPasswordNeededError` | رمز دو مرحله‌ای را وارد کنید (`ACOD_PASSWORD`) |
-| ربات به پیام‌ها پاسخ نمی‌دهد | حسابِ ربات باید عضو گروه باشد و پیام باید «گروهی» و «ورودی» باشد (`GROUPS_ONLY`) |
+| ربات به پیام‌های گروه پاسخ نمی‌دهد | حسابِ ربات باید عضو گروه باشد و پیام «ورودی» و دقیقاً `ai cod` یا `کدرز` باشد (`GROUPS_ONLY`) |
+| به پیام خصوصی پاسخ نمی‌دهد | `ACOD_PRIVATE_AUTO_REPLY` باید `1` باشد و پیام «ورودی» باشد (نه ارسالیِ خود ربات) |
 | `پیام معرفی در همه‌ی حالت‌ها ناموفق بود` | لاگ تلاش‌ها را ببینید؛ معمولاً مجوز ارسال در گروه یا محدودیت موقت سرور است |
 | مالک اشتباهی ثبت شده | `python manage.py reset-owner --yes` (فقط برای تست) |
