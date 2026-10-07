@@ -51,6 +51,31 @@ CREATE TABLE IF NOT EXISTS pv_users (
     display_name  TEXT,
     first_seen_at TEXT NOT NULL
 );
+
+-- ---------------------------------------------------------------------------
+-- هوش مصنوعی گروه‌ها (فقط GROUP) — همه‌ی وضعیت‌ها per-group
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS ai_group_state (
+    chat_id    INTEGER PRIMARY KEY,          -- هر گروه وضعیت مستقل خودش را دارد
+    enabled    INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ai_allowed_users (
+    chat_id      INTEGER NOT NULL,
+    user_id      INTEGER NOT NULL,
+    username     TEXT,
+    display_name TEXT,
+    added_at     TEXT NOT NULL,
+    PRIMARY KEY (chat_id, user_id)           -- مجوز per-group و بر اساس user_id واقعی
+);
+
+CREATE TABLE IF NOT EXISTS ai_usage (
+    chat_id  INTEGER NOT NULL,
+    day      TEXT NOT NULL,                  -- YYYY-MM-DD بر اساس UTC
+    requests INTEGER NOT NULL DEFAULT 0,     -- تعداد درخواست‌های مصرف‌شده
+    PRIMARY KEY (chat_id, day)
+);
 """
 
 
@@ -62,6 +87,17 @@ class PvUser:
     username: Optional[str]
     display_name: Optional[str]
     first_seen_at: str
+
+
+@dataclass(frozen=True)
+class AiAllowedUser:
+    """کاربر مجاز برای گفت‌وگو با AI در یک گروه مشخص."""
+
+    chat_id: int
+    user_id: int
+    username: Optional[str]
+    display_name: Optional[str]
+    added_at: str
 
 
 @dataclass(frozen=True)
@@ -238,6 +274,147 @@ class OwnerStore:
             )
             for r in rows
         ]
+
+    # ------------------------------------------------ هوش مصنوعی گروه‌ها (AI)
+    def ai_set_enabled(self, chat_id: int, enabled: bool) -> None:
+        """روشن/خاموش کردن AI برای یک گروه خاص (بدون اثر روی گروه‌های دیگر)."""
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO ai_group_state (chat_id, enabled, updated_at)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(chat_id) DO UPDATE SET
+                       enabled = excluded.enabled,
+                       updated_at = excluded.updated_at""",
+                (int(chat_id), 1 if enabled else 0, _now()),
+            )
+            self._conn.commit()
+
+    def ai_is_enabled(self, chat_id: int) -> bool:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT enabled FROM ai_group_state WHERE chat_id = ?", (int(chat_id),)
+            ).fetchone()
+        return bool(row["enabled"]) if row else False
+
+    def ai_allow_user(
+        self,
+        chat_id: int,
+        user_id: int,
+        *,
+        username: Optional[str] = None,
+        display_name: Optional[str] = None,
+    ) -> bool:
+        """مجاز کردن کاربر در یک گروه. Returns: True اگر کاربر تازه مجاز شده باشد."""
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                existed = self._conn.execute(
+                    "SELECT 1 FROM ai_allowed_users WHERE chat_id = ? AND user_id = ?",
+                    (int(chat_id), int(user_id)),
+                ).fetchone() is not None
+                self._conn.execute(
+                    """INSERT INTO ai_allowed_users
+                           (chat_id, user_id, username, display_name, added_at)
+                       VALUES (?, ?, ?, ?, ?)
+                       ON CONFLICT(chat_id, user_id) DO UPDATE SET
+                           username = excluded.username,
+                           display_name = excluded.display_name""",
+                    (int(chat_id), int(user_id), username, display_name, _now()),
+                )
+                self._conn.execute("COMMIT")
+                return not existed
+            except Exception:
+                try:
+                    self._conn.execute("ROLLBACK")
+                except sqlite3.Error:
+                    pass
+                raise
+
+    def ai_is_allowed(self, chat_id: int, user_id: int) -> bool:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM ai_allowed_users WHERE chat_id = ? AND user_id = ?",
+                (int(chat_id), int(user_id)),
+            ).fetchone()
+        return row is not None
+
+    def ai_revoke_user(self, chat_id: int, user_id: int) -> bool:
+        """حذف مجوز کاربر در یک گروه. Returns: True اگر مجوزی وجود داشت و حذف شد."""
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM ai_allowed_users WHERE chat_id = ? AND user_id = ?",
+                (int(chat_id), int(user_id)),
+            )
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    def ai_allowed_users(self, chat_id: int) -> list[AiAllowedUser]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM ai_allowed_users WHERE chat_id = ? ORDER BY added_at, user_id",
+                (int(chat_id),),
+            ).fetchall()
+        return [
+            AiAllowedUser(
+                chat_id=r["chat_id"],
+                user_id=r["user_id"],
+                username=r["username"],
+                display_name=r["display_name"],
+                added_at=r["added_at"],
+            )
+            for r in rows
+        ]
+
+    def ai_usage(self, chat_id: int, day: str) -> int:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT requests FROM ai_usage WHERE chat_id = ? AND day = ?",
+                (int(chat_id), day),
+            ).fetchone()
+        return int(row["requests"]) if row else 0
+
+    def ai_consume_quota(self, chat_id: int, day: str, limit: int) -> bool:
+        """مصرف یک واحد از سهمیه‌ی روزانه‌ی همان گروه — اتمیک.
+
+        Returns:
+            True اگر سهمیه داشت و مصرف شد؛ False اگر سهمیه‌ی روز تمام شده بود
+            (در این حالت هیچ درخواستی نباید به API ارسال شود).
+        """
+        chat_id, limit = int(chat_id), int(limit)
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                row = self._conn.execute(
+                    "SELECT requests FROM ai_usage WHERE chat_id = ? AND day = ?",
+                    (chat_id, day),
+                ).fetchone()
+                used = int(row["requests"]) if row else 0
+                if used >= limit:
+                    self._conn.execute("ROLLBACK")
+                    return False
+                self._conn.execute(
+                    """INSERT INTO ai_usage (chat_id, day, requests) VALUES (?, ?, 1)
+                       ON CONFLICT(chat_id, day) DO UPDATE SET requests = requests + 1""",
+                    (chat_id, day),
+                )
+                self._conn.execute("COMMIT")
+                return True
+            except Exception:
+                try:
+                    self._conn.execute("ROLLBACK")
+                except sqlite3.Error:
+                    pass
+                raise
+
+    def ai_exhaust_quota(self, chat_id: int, day: str, limit: int) -> None:
+        """علامت‌زدن سهمیه‌ی روز به‌عنوان تمام‌شده (وقتی خود Cloudflare quota برگرداند)."""
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO ai_usage (chat_id, day, requests) VALUES (?, ?, ?)
+                   ON CONFLICT(chat_id, day) DO UPDATE SET requests = ?""",
+                (int(chat_id), day, int(limit), int(limit)),
+            )
+            self._conn.commit()
 
     def attempts(self) -> list[dict]:
         """سابقه‌ی همه‌ی تلاش‌های «ai cod» (برای تست و دیباگ)."""

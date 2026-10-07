@@ -83,6 +83,40 @@ class FakeSender:
         self.username = username
 
 
+class FakeReplyMessage:
+    """پیام مرجعی که کاربر روی آن Reply کرده است (خروجی get_reply_message)."""
+
+    def __init__(self, *, sender_id: int, text: str = "", msg_id: int = 1,
+                 username: Optional[str] = None, display_name: str = "User"):
+        self.sender_id = sender_id
+        self.raw_text = text
+        self.id = msg_id
+        self.sender = FakeSender(sender_id, first_name=display_name, username=username)
+
+
+class FakeAI:
+    """کلاینت جعلی هوش مصنوعی: هیچ درخواست شبکه‌ای انجام نمی‌شود."""
+
+    def __init__(self, reply: str = "پاسخ تست هوش مصنوعی", *, error=None):
+        self.reply = reply
+        self.error = error            # در صورت نیاز: نمونه‌ی AIError/AIQuotaExceeded
+        self.calls: list[list[dict]] = []
+
+    @property
+    def configured(self) -> bool:
+        return True
+
+    async def chat(self, messages, *, max_tokens=None):
+        self.calls.append(messages)
+        if self.error is not None:
+            raise self.error
+        from ai_client import AIResponse
+        return AIResponse(text=self.reply)
+
+    async def close(self) -> None:
+        pass
+
+
 class FakeEvent:
     """شبیه‌ساز events.NewMessage با همان attributeهایی که core استفاده می‌کند."""
 
@@ -98,6 +132,7 @@ class FakeEvent:
         out: bool = False,
         username: Optional[str] = None,
         display_name: Optional[str] = None,
+        reply_to: "FakeReplyMessage | None" = None,
     ):
         self.raw_text = text
         self.sender_id = user_id
@@ -107,12 +142,22 @@ class FakeEvent:
         # مطابق SPlusthon: is_private ↔ PeerUser بودن چت (در PV، chat_id همان شناسه‌ی کاربر است)
         self.is_private = (not is_group) if is_private is None else is_private
         self.out = out
+        # --- Reply (مطابق API واقعی: is_reply / reply_to_msg_id / get_reply_message) ---
+        self._reply_message = reply_to
+        self.reply_to_msg_id = reply_to.id if reply_to is not None else None
         self.sender = FakeSender(
             user_id,
             # None → نام پیش‌فرض؛ رشته‌ی خالی → کاربر بدون نام (برای تست fallback)
             first_name=(display_name if display_name is not None else "User"),
             username=username,
         )
+
+    @property
+    def is_reply(self) -> bool:
+        return self._reply_message is not None
+
+    async def get_reply_message(self):
+        return self._reply_message
 
     async def get_input_chat(self):
         if self.is_private:

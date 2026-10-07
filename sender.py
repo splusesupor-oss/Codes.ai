@@ -35,6 +35,19 @@ from config import Config
 log = logging.getLogger("acod.sender")
 
 
+async def resolve_peer(event):
+    """استخراج InputPeer مقصد از یک ایونت پیام (مشترک بین core و سرویس AI)."""
+    getter = getattr(event, "get_input_chat", None)
+    if callable(getter):
+        try:
+            peer = await getter()
+            if peer is not None:
+                return peer
+        except Exception:  # noqa: BLE001 — در بدترین حالت به chat_id برمی‌گردیم
+            log.debug("get_input_chat ناموفق بود؛ از chat_id استفاده می‌شود.")
+    return getattr(event, "chat_id", None)
+
+
 @dataclass
 class SendReport:
     ok: bool
@@ -122,11 +135,14 @@ class BrandSender:
         return report
 
     # ------------------------------------------------------------------ helpers
-    async def send_text(self, client, chat, text: str) -> SendReport:
+    async def send_text(
+        self, client, chat, text: str, *, reply_to_msg_id: Optional[int] = None
+    ) -> SendReport:
         """ارسال یک پیام متنی ساده (بدون entity).
 
-        برای پاسخ‌های مدیریتی PV (مثل «تعداد اعضا» / «لیست اعضا») که قالب خاصی
-        لازم ندارند. از همان درخواست واقعی `messages.sendMessage` استفاده می‌کند.
+        برای پیام‌های سیستمی (مثل «تعداد اعضا» / «لیست اعضا» و پاسخ‌های هوش مصنوعی)
+        که قالب خاصی لازم ندارند. از همان درخواست واقعی `messages.sendMessage`
+        استفاده می‌کند و در صورت نیاز، پیام را به‌صورت Reply می‌فرستد.
         """
         peer = await self._resolve_peer(client, chat)
         report = SendReport(ok=False, attempts=[])
@@ -135,6 +151,7 @@ class BrandSender:
                 functions.messages.SendMessageRequest(
                     peer=peer,
                     message=text,
+                    reply_to=self._plain_reply(reply_to_msg_id),
                     no_webpage=not self.cfg.link_preview,
                 )
             )

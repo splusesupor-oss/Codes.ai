@@ -15,7 +15,7 @@
 2. [پاسخ به ۵ پرسش فنی](#۲-پاسخ-به-۵-پرسش-فنی)
 3. [ساختار پروژه](#۳-ساختار-پروژه)
 4. [نصب و اجرا در Termux](#۴-نصب-و-اجرا-در-termux)
-5. [دستورات ربات و قوانین مالکیت](#۵-دستورات-ربات-و-قوانین-مالکیت)
+5. [دستورات ربات و قوانین مالکیت (شامل مسیر ۵: هوش مصنوعی گروه‌ها)](#۵-دستورات-ربات-و-قوانین-مالکیت)
 6. [حافظه‌ی دائمی و ثبت اتمیک](#۶-حافظهی-دائمی-و-ثبت-اتمیک)
 7. [تست‌ها](#۷-تستها)
 8. [تنظیمات](#۸-تنظیمات)
@@ -192,6 +192,17 @@ cd ~/soroush_ai_cod_bot
 > متغیرهای محیطی اختیاری در فایل `.env.example` فهرست شده‌اند؛ برای استفاده، آن را به
 > `.env` کپی کنید (فایل `.env` در `.gitignore` است و هرگز commit نمی‌شود).
 
+برای فعال‌کردن **هوش مصنوعی گروه‌ها** (بخش ۵.۵)، دو مقدار Cloudflare را در `.env` بگذارید:
+
+```bash
+cp .env.example .env
+nano .env      # CLOUDFLARE_ACCOUNT_ID و CLOUDFLARE_API_TOKEN را پر کنید
+```
+
+* `CLOUDFLARE_ACCOUNT_ID` → از داشبورد Cloudflare (سمت راست صفحه‌ی Workers AI).
+* `CLOUDFLARE_API_TOKEN` → یک توکن با دسترسی **Workers AI** (My Profile → API Tokens).
+* ⚠️ فایل `.env` **هرگز** نباید commit یا جایی منتشر شود؛ خودِ کد هیچ توکنی ندارد.
+
 **اولین اجرا** از شما می‌پرسد:
 
 ```
@@ -360,6 +371,51 @@ fallback معرفی را دارند (`blockquote+bold → bold-only → plain`).
 
 ---
 
+### مسیر ۵ — هوش مصنوعی گروه‌ها (فقط GROUP — بی‌ارتباط با PV)
+
+هوش مصنوعی با **Cloudflare Workers AI** و مدل واقعی
+`@cf/zai-org/glm-4.7-flash` کار می‌کند (API واقعی:
+`POST https://api.cloudflare.com/client/v4/accounts/{account}/ai/run/{model}` با
+`Authorization: Bearer …`).
+
+| دستور (فقط مالک سراسری، فقط در گروه) | کار |
+| --- | --- |
+| `ai online` | روشن‌کردن AI برای **همان گروه** |
+| `ai of` | خاموش‌کردن AI برای **همان گروه** |
+| `ai list` (با Reply روی پیام کاربر) | مجاز کردن همان کاربر برای AI در همان گروه |
+| `ai list x` (با Reply روی پیام کاربر) | حذف مجوز همان کاربر در همان گروه |
+
+قواعد گفت‌وگو:
+
+* فقط وقتی AI گروه **روشن** باشد و پیام کاربر **Reply** باشد و **متن** داشته باشد؛
+  پیام بدون Reply، پیام بدون متن (مدیا/استیکر) و پیام‌های خودِ حساب ربات نادیده گرفته می‌شوند.
+* کاربر مجاز با **`user_id` واقعی** تشخیص داده می‌شود (username هیچ اعتباری ندارد) و مجوز
+  **per-group** است؛ مجوز گروه A روی گروه B اثری ندارد.
+* کاربر غیرمجاز دقیقاً این متن را می‌گیرد و **هیچ درخواستی به Cloudflare نمی‌رود**:
+  «شما مجاز به صحبت کردن با هوش مصنوعی ai fox acod نیستید مالک باید به شما اجازه صحبت بدهد»
+* پاسخ مدل در **همان گروه** و به‌صورت **Reply روی همان پیام کاربر** ارسال می‌شود.
+* **سهمیه‌ی داخلی روزانه به تفکیک هر گروه** (پیش‌فرض ۳۰ درخواست، `ACOD_AI_DAILY_QUOTA`)
+  بر اساس **روز UTC**؛ اگر سهمیه‌ی داخلی تمام شود یا خود Cloudflare خطای
+  سهمیه/محدودیت (HTTP 429 / کدهای 4006 و 3036 — «daily free allocation of 10,000 neurons»)
+  برگرداند، دقیقاً این متن ارسال و سهمیه‌ی آن روز بسته می‌شود:
+  «سهمیه روزانه هوش مصنوعی به پایان رسیده است.»
+* **کنترل مصرف:** هر درخواست حداکثر `ACOD_AI_MAX_OUTPUT_TOKENS` (پیش‌فرض ۲۵۶) توکن خروجی
+  دارد، متن ورودی هر پیام به `ACOD_AI_MAX_INPUT_CHARS` (پیش‌فرض ۸۰۰) کاراکتر بریده می‌شود و
+  از تاریخچه فقط `ACOD_AI_HISTORY_PAIRS` (پیش‌فرض ۲) جفت گفت‌وگوی آخر فرستاده می‌شود؛
+  پس یک پیام بسیار بلند نمی‌تواند سهمیه را یک‌جا بسوزاند (تست `test_15_…`).
+* **هیچ‌کدام از این دستورها در PV کار نمی‌کنند** و مسیر PV (معرفی، منو، کاربران PV،
+  «تعداد اعضا»/«لیست اعضا») دست‌نخورده است.
+
+نکته‌ی مالکیت: مالک سراسری همان مالکِ «ai cod» است و به‌صورت پیش‌فرض خودش هم می‌تواند با AI
+صحبت کند (`ACOD_AI_OWNER_ALLOWED=0` برای غیرفعال‌کردن این رفتار). مجوز کاربران با
+`ai list` باز و با `ai list x` بسته می‌شود و هیچ کاربری با username نمی‌تواند خودش را مجاز کند.
+
+نصب/تنظیم: `CLOUDFLARE_ACCOUNT_ID` و `CLOUDFLARE_API_TOKEN` در `.env`. اگر تنظیم نشده باشند،
+دستورهای مدیریتی کار می‌کنند ولی هنگام گفت‌وگو پیام «تنظیم نشده» برگردانده می‌شود و هیچ
+درخواست شکست‌خورده‌ای ارسال نمی‌شود.
+
+---
+
 ### قالب پیام (دقیقاً همان چیزی که خواسته شد)
 
 ```
@@ -401,7 +457,31 @@ CREATE TABLE pv_users (              -- کاربرانی که در PV پیام �
     display_name  TEXT,
     first_seen_at TEXT NOT NULL
 );
+
+-- هوش مصنوعی گروه‌ها: همه‌ی وضعیت‌ها per-group
+CREATE TABLE ai_group_state (        -- روشن/خاموش بودن AI هر گروه
+    chat_id    INTEGER PRIMARY KEY,
+    enabled    INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE ai_allowed_users (      -- کاربران مجاز هر گروه (کلید = chat_id + user_id)
+    chat_id      INTEGER NOT NULL,
+    user_id      INTEGER NOT NULL,
+    username     TEXT,
+    display_name TEXT,
+    added_at     TEXT NOT NULL,
+    PRIMARY KEY (chat_id, user_id)
+);
+CREATE TABLE ai_usage (              -- مصرف روزانه‌ی هر گروه (day بر اساس UTC)
+    chat_id  INTEGER NOT NULL,
+    day      TEXT NOT NULL,
+    requests INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (chat_id, day)
+);
 ```
+
+بنابراین روشن/خاموش بودن، مجوز کاربران و سهمیه‌ی مصرف **همه per-group** هستند و با ری‌استارت
+از بین نمی‌روند (`test_16_state_survives_restart`).
 
 `BEGIN IMMEDIATE` + کلید اصلی `slot=1` باعث می‌شود اگر دو پیام `ai cod` **هم‌زمان** (حتی در دو
 پروسه‌ی جدا) برسند، **فقط یکی** ثبت شود و دومی با `IntegrityError` به‌درستی رد شود.
@@ -420,15 +500,41 @@ python manage.py reset-owner --yes  # فقط برای تست
 ## ۷. تست‌ها
 
 ```bash
-./run_all_tests.sh          # یا: python -m unittest discover -s tests -t . -v   (۱۱۰ تست)
+./run_all_tests.sh          # یا: python -m unittest discover -s tests -t . -v   (161 تست)
 ```
 
 خروجی واقعی اجرای تست‌ها در همین محیط:
 
 ```
-Ran 110 tests in 0.22s
+Ran 161 tests in 0.304s
 OK
 ```
+
+تست‌های **Phase 7** (هوش مصنوعی گروه‌ها):
+
+| خواسته | تست |
+| --- | --- |
+| `ai online` توسط مالک → روشن شدن همان گروه | `test_1_owner_enables_ai_for_group` |
+| `ai online` توسط کاربر معمولی → بدون تغییر | `test_2_non_owner_cannot_enable` |
+| `ai of` توسط مالک → خاموش شدن | `test_3_owner_disables_ai` |
+| `ai list` با Reply → مجاز شدن همان `user_id` | `test_4_owner_allows_user_by_reply` |
+| `ai list` بدون Reply → مجاز نشود | `test_5_without_reply_nothing_is_allowed` |
+| `ai list` توسط کاربر معمولی → مجاز نشود | `test_6_non_owner_cannot_allow_anyone` |
+| `ai list x` با Reply → حذف مجوز | `test_7_owner_revokes_permission` |
+| کاربر غیرمجاز + Reply → پیام دقیق + بدون فراخوانی API | `test_8_unauthorized_user_gets_denial_without_api_call` |
+| کاربر مجاز + Reply → فراخوانی API + Reply در همان گروه | `test_9_authorized_user_gets_ai_reply` |
+| پیام بدون Reply → بدون فراخوانی API | `test_10_message_without_reply_never_calls_api` |
+| PV → هیچ قابلیت AI | `test_11_pv_never_triggers_ai_features` (+۲ تست دیگر) |
+| مجوز/روشن‌بودن/سهمیه‌ی گروه A روی B اثر نکند | `test_12_…` تا `test_12d_…` |
+| AI خاموش → بدون فراخوانی API | `test_13_disabled_ai_never_calls_api` |
+| سهمیه‌ی داخلی تمام → پیام دقیق + بدون درخواست اضافه | `test_14_internal_quota_exhaustion_blocks_further_requests` |
+| خطای سهمیه‌ی Cloudflare → پیام دقیق + بستن سهمیه‌ی روز | `test_14b_cloudflare_quota_error_marks_day_as_exhausted` |
+| پیام بسیار بلند سهمیه را یک‌جا نسوزاند | `test_15_long_message_is_truncated_per_request` |
+| تاریخچه‌ی محدود | `test_15b_history_is_bounded` |
+| بعد از restart وضعیت per-group باقی بماند | `test_16_state_survives_restart` |
+| سازگاری دیتابیس قدیمی (Phase 6) با جداول AI | `test_old_database_upgrades_cleanly_and_keeps_data` |
+| خودکار مجاز نشدن با username / دستورها فقط مالک | `test_17c_user_cannot_self_authorize_with_plain_text` / `test_17d_…` |
+| صحت endpoint/پارس پاسخ/تشخیص سهمیه‌ی Cloudflare | `tests/test_ai_client.py` (۱۲ تست، آفلاین) |
 
 تست‌های کلیدی مطابق خواسته‌ی شما:
 
@@ -493,6 +599,15 @@ OK
 | `ACOD_PV_UNKNOWN_NAME` | `کاربر بدون نام` | نام جایگزین وقتی نام کاربر خالی است |
 | `ACOD_MAX_MESSAGE_CHARS` | `3500` | سقف طول هر پیام (برای تکه‌تکه‌کردن لیست بلند) |
 | `ACOD_QUOTE_MODE` | `entity` | `entity` (نقل‌قول شیشه‌ای داخل پیام) / `reply` (ریپلای + quote_text) / `off` |
+| `CLOUDFLARE_ACCOUNT_ID` | — | شناسه‌ی حساب Cloudflare (برای AI؛ داخل کد نیست، فقط `.env`) |
+| `CLOUDFLARE_API_TOKEN` | — | توکن Workers AI (برای AI؛ داخل کد نیست، فقط `.env`) |
+| `ACOD_AI_MODEL` | `@cf/zai-org/glm-4.7-flash` | مدل Workers AI |
+| `ACOD_AI_DAILY_QUOTA` | `30` | سهمیه‌ی داخلی روزانه‌ی هر گروه (روز UTC) |
+| `ACOD_AI_MAX_OUTPUT_TOKENS` | `256` | سقف توکن خروجی هر پاسخ |
+| `ACOD_AI_MAX_INPUT_CHARS` | `800` | حداکثر طول متن ورودی هر پیام (مازاد بریده می‌شود) |
+| `ACOD_AI_HISTORY_PAIRS` | `2` | تعداد جفت گفت‌وگوی فرستاده‌شده به مدل (۰ = بدون تاریخچه) |
+| `ACOD_AI_TIMEOUT` | `45` | مهلت پاسخ مدل (ثانیه) |
+| `ACOD_AI_OWNER_ALLOWED` | `1` | مالک سراسری خودکار مجاز باشد؟ |
 
 ---
 
@@ -533,6 +648,13 @@ OK
    خودتان است. سشن را محرمانه نگه دارید و از حساب اختصاصی استفاده کنید.
 5. **لینک** `https://splus.ir/Orderawebsite` عیناً و بدون هیچ entity/تغییری ارسال می‌شود
    (تست `test_link_is_untouched`).
+6. **هوش مصنوعی به سهمیه‌ی حساب Cloudflare شما وابسته است.** سهمیه‌ی داخلی روزانه (per-group) از
+   خرج‌شدن بی‌رویه جلوگیری می‌کند، ولی سقف واقعی همان سهمیهٔ رایگان/پلن حساب Cloudflare است؛
+   اگر آن تمام شود، متن «سهمیه روزانه هوش مصنوعی به پایان رسیده است.» ارسال و آن روز بسته می‌شود.
+   کدهای خطای واقعی Cloudflare در عمل ‎4006‎ (و در مستندات ‎3036‎) با HTTP 429 هستند؛ کد پروژه
+   هم با کد، هم با HTTP 429 و هم با کلیدواژه‌های پیام خطا تشخیص می‌دهد.
+7. **تاریخچه‌ی گفت‌وگو در حافظه است، نه دیتابیس** (عمداً): با ری‌استارت پاک می‌شود، ولی
+   روشن‌بودن گروه، مجوز کاربران و مصرف روزانه در SQLite می‌مانند.
 
 ---
 
@@ -549,3 +671,8 @@ OK
 | متن منو/پاسخ‌ها را باید عوض کنم | در `brand.py` بخش `MENU_*` و `PV_REPLIES` (قالب‌بندی خودکار حفظ می‌شود) |
 | `پیام معرفی در همه‌ی حالت‌ها ناموفق بود` | لاگ تلاش‌ها را ببینید؛ معمولاً مجوز ارسال در گروه یا محدودیت موقت سرور است |
 | مالک اشتباهی ثبت شده | `python manage.py reset-owner --yes` (فقط برای تست) |
+| `⚠️ هوش مصنوعی تنظیم نشده است` | `CLOUDFLARE_ACCOUNT_ID` و `CLOUDFLARE_API_TOKEN` در `.env` پر نشده‌اند |
+| «سهمیه روزانه … به پایان رسیده است.» | سهمیه‌ی داخلی روز (`ACOD_AI_DAILY_QUOTA`) یا سهمیه‌ی Cloudflare تمام شده؛ تا ۰۰:۰۰ UTC صبر کنید |
+| AI جواب نمی‌دهد | باید AI همان گروه روشن باشد (`ai online`)، پیام **Reply** باشد و کاربر با `ai list` مجاز شده باشد |
+| دستور `ai online` اثری ندارد | فقط **مالک سراسری** اجازه دارد و فقط در **گروه** (در PV اجرا نمی‌شود) |
+| پاسخ AI اشتباه/قطعی است | مدل را با `ACOD_AI_MODEL` عوض کنید و `ACOD_AI_HISTORY_PAIRS=0` را امتحان کنید |

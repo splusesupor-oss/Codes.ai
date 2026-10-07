@@ -20,6 +20,8 @@ import sys
 
 from splusthon import SoroushClient, events
 
+from ai_client import CloudflareAI
+from ai_service import GroupAI
 from config import Config, ensure_data_dir
 from core import BotCore
 from sender import BrandSender
@@ -56,7 +58,24 @@ def build_client(cfg: Config) -> SoroushClient:
 async def run(cfg: Config) -> None:
     ensure_data_dir(cfg)
     store = OwnerStore(cfg.db_path)
-    core = BotCore(cfg, store, BrandSender(cfg))
+    sender = BrandSender(cfg)
+
+    # هوش مصنوعی گروه‌ها (Cloudflare Workers AI) — بدون Token داخل کد، فقط از .env
+    ai_client = CloudflareAI(
+        cfg.cloudflare_account_id,
+        cfg.cloudflare_api_token,
+        cfg.ai_model,
+        timeout=cfg.ai_timeout,
+        max_output_tokens=cfg.ai_max_output_tokens,
+    )
+    if ai_client.configured:
+        log.info("هوش مصنوعی آماده است (مدل: %s | سهمیه روزانه هر گروه: %s)",
+                 cfg.ai_model, cfg.ai_daily_quota)
+    else:
+        log.warning("CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_API_TOKEN تنظیم نشده است؛ "
+                    "دستورهای AI کار می‌کنند ولی پاسخ مدل ارسال نمی‌شود. (فایل .env)")
+
+    core = BotCore(cfg, store, sender, ai=GroupAI(cfg, store, sender, ai_client))
 
     owner = store.get_owner()
     if owner:
@@ -91,10 +110,14 @@ async def run(cfg: Config) -> None:
     client.add_event_handler(handler, events.NewMessage(incoming=True))
     log.info("ربات فعال است. دستورات: «%s» برای مالک سراسری و «%s» برای معرفی ربات.",
              cfg.owner_command, cfg.kodrez_command)
+    log.info("دستورهای AI گروه‌ها (فقط مالک): «%s» / «%s» / «%s» / «%s»",
+             cfg.ai_online_command, cfg.ai_of_command,
+             cfg.ai_list_command, cfg.ai_listx_command)
 
     try:
         await client.run_until_disconnected()
     finally:
+        await ai_client.close()
         store.close()
         log.info("اتصال بسته شد.")
 

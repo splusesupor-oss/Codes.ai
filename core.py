@@ -29,6 +29,8 @@ import unicodedata
 from typing import Optional
 
 import brand
+from ai_service import GroupAI
+from brand import chunk_lines          # ابزار مشترک تکه‌تکه‌کردن متن (در brand)
 from config import Config
 from sender import BrandSender, SendReport
 from storage import OwnerStore
@@ -91,6 +93,25 @@ def match_pv_admin_command(text: str, cfg: Config) -> Optional[str]:
     return None
 
 
+def match_ai_command(text: str, cfg: Config) -> Optional[str]:
+    """تشخیص دستورهای AI گروه: online | of | list | listx.
+
+    «ai list x» قبل از «ai list» بررسی می‌شود تا اشتباه match نشود.
+    """
+    if not text or not text.strip():
+        return None
+    given = _normalization_variants(text)
+    if given & _normalization_variants(cfg.ai_listx_command):
+        return "listx"
+    if given & _normalization_variants(cfg.ai_list_command):
+        return "list"
+    if given & _normalization_variants(cfg.ai_online_command):
+        return "online"
+    if given & _normalization_variants(cfg.ai_of_command):
+        return "of"
+    return None
+
+
 def match_menu_option(text: str) -> Optional[str]:
     """تشخیص یکی از ۶ گزینه‌ی منوی PV.
 
@@ -126,36 +147,21 @@ def format_pv_user_list(users, unknown_name: str = "کاربر بدون نام")
     ]
 
 
-def chunk_lines(lines: list[str], max_chars: int) -> list[str]:
-    """تکه‌تکه‌کردن خطوط به پیام‌هایی با طول مجاز (برای جلوگیری از خطای طول پیام).
-
-    یک خط بلندتر از سقف، تنها در پیام خودش می‌آید (وسط خط بریده نمی‌شود).
-    """
-    chunks: list[str] = []
-    current: list[str] = []
-    current_len = 0
-
-    for line in lines:
-        extra = len(line) + (1 if current else 0)   # +1 برای \n
-        if current and current_len + extra > max_chars:
-            chunks.append("\n".join(current))
-            current, current_len = [], 0
-            extra = len(line)
-        current.append(line)
-        current_len += extra
-
-    if current:
-        chunks.append("\n".join(current))
-    return chunks
-
-
 class BotCore:
     """هسته‌ی ربات (مستقل از شبکه و کاملاً تست‌پذیر)."""
 
-    def __init__(self, cfg: Config, store: OwnerStore, sender: Optional[BrandSender] = None):
+    def __init__(
+        self,
+        cfg: Config,
+        store: OwnerStore,
+        sender: Optional[BrandSender] = None,
+        ai: Optional[GroupAI] = None,
+    ):
         self.cfg = cfg
         self.store = store
         self.sender = sender or BrandSender(cfg)
+        # سرویس هوش مصنوعی (فقط گروه‌ها) — در تست‌ها با یک کلاینت جعلی تزریق می‌شود
+        self.ai = ai or GroupAI(cfg, store, self.sender)
 
     # ------------------------------------------------------------------ entry
     async def on_new_message(self, client, event) -> None:
@@ -171,24 +177,36 @@ class BotCore:
             await self._handle_private(client, event)
             return
 
-        # --- مسیر ۲: گروه‌ها → دستورها (بدون هیچ تغییری نسبت به قبل) ---
+        # --- مسیر ۲: گروه‌ها → دستورها و هوش مصنوعی ---
         text = getattr(event, "raw_text", None) or ""
+        is_group = bool(getattr(event, "is_group", False))
         if not text.strip():
             return
 
+        # (۲-الف) دستورهای AI گروه: ai online / ai of / ai list / ai list x
+        #         (فقط گروه و فقط مالک سراسری — منطق و بررسی مالک در GroupAI)
+        ai_command = match_ai_command(text, self.cfg)
+        if ai_command is not None:
+            if is_group:
+                await self.ai.handle_admin_command(client, event, ai_command)
+            return
+
+        # (۲-ب) دستورهای فعلی ربات (بدون تغییر)
         command = match_command(text, self.cfg)
-        if command is None:
+        if command is not None:
+            if self.cfg.groups_only and not is_group:
+                log.debug("دستور «%s» در چت غیرگروهی نادیده گرفته شد (chat_id=%s)",
+                          text, getattr(event, "chat_id", None))
+                return
+            if command == "owner":
+                await self._handle_owner_command(client, event)
+            elif command == "kodrez":
+                await self._handle_kodrez(client, event)
             return
 
-        if self.cfg.groups_only and not getattr(event, "is_group", False):
-            log.debug("دستور «%s» در چت غیرگروهی نادیده گرفته شد (chat_id=%s)",
-                      text, getattr(event, "chat_id", None))
-            return
-
-        if command == "owner":
-            await self._handle_owner_command(client, event)
-        elif command == "kodrez":
-            await self._handle_kodrez(client, event)
+        # (۲-ج) گفت‌وگو با هوش مصنوعی: فقط Reply در گروهی که AI آن روشن است
+        if is_group and getattr(event, "is_reply", False):
+            await self.ai.handle_chat(client, event)
 
     # ------------------------------------------------------- پیام خصوصی (PV)
     async def _handle_private(self, client, event) -> None:

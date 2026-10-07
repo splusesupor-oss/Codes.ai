@@ -1,0 +1,603 @@
+"""
+تست‌های سیستم هوش مصنوعی گروه‌ها (فقط GROUP).
+
+پوشش ۱۷ سناریوی درخواستی:
+  ۱) ai online توسط مالک → فعال شدن AI همان گروه
+  ۲) ai online توسط کاربر معمولی → هیچ تغییری
+  ۳) ai of توسط مالک → غیرفعال شدن
+  ۴) ai list با Reply → مجاز شدن همان user_id
+  ۵) ai list بدون Reply → مجاز نشود
+  ۶) ai list توسط کاربر معمولی → مجاز نشود
+  ۷) ai list x با Reply → حذف مجوز
+  ۸) کاربر غیرمجاز + Reply → پیام عدم دسترسی و بدون فراخوانی API
+  ۹) کاربر مجاز + Reply → فراخوانی API و ارسال پاسخ
+  ۱۰) پیام بدون Reply → بدون فراخوانی API
+  ۱۱) PV → هیچ قابلیت AI فعال نشود
+  ۱۲) مجوز گروه A روی گروه B اثر نگذارد
+  ۱۳) AI خاموش → بدون فراخوانی API
+  ۱۴) سهمیه تمام‌شده → پیام سهمیه و بدون درخواست اضافی (داخلی و از سمت Cloudflare)
+  ۱۵) پیام بسیار طولانی سهمیه را نامحدود مصرف نکند
+  ۱۶) restart → وضعیت per-group از storage از بین نرود
+  ۱۷) رگرسیون: همه‌ی تست‌های قبلی پروژه (در فایل‌های دیگر) + بررسی اضافی اینجا
+"""
+
+from __future__ import annotations
+
+import asyncio
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import brand  # noqa: E402
+from ai_client import AIConfigError, AIQuotaExceeded  # noqa: E402
+from ai_service import GroupAI, utc_day  # noqa: E402
+from config import Config  # noqa: E402
+from core import BotCore  # noqa: E402
+from sender import BrandSender  # noqa: E402
+from storage import OwnerStore  # noqa: E402
+from splusthon import types  # noqa: E402
+from tests.fakes import FakeAI, FakeClient, FakeEvent, FakeReplyMessage  # noqa: E402
+
+GROUP_A, GROUP_B = -1001, -2002
+OWNER, USER_1, USER_2 = 111, 501, 502
+
+
+def run(coro):
+    return asyncio.run(coro)
+
+
+class AITestCase(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db = Path(self.tmp.name) / "state.sqlite3"
+        self.cfg = Config()
+        self.store = OwnerStore(self.db)
+        self.client = FakeClient()
+        self.ai_client = FakeAI(reply="سلام! این پاسخ تستی است.")
+        self.sender = BrandSender(self.cfg)
+        self.ai = GroupAI(self.cfg, self.store, self.sender, self.ai_client)
+        self.core = BotCore(self.cfg, self.store, self.sender, ai=self.ai)
+
+    def tearDown(self) -> None:
+        self.store.close()
+        self.tmp.cleanup()
+
+    # ------------------------------------------------------------- ابزارها
+    def make_owner(self, user_id=OWNER):
+        self.store.claim(user_id, chat_id=GROUP_A, message_id=1, display_name="مالک")
+
+    async def send(
+        self, text, *, user_id, chat_id=GROUP_A, is_group=True, out=False,
+        reply_to=None, username=None, display_name=None,
+    ):
+        event = FakeEvent(
+            text,
+            user_id=user_id,
+            chat_id=chat_id,
+            is_group=is_group,
+            out=out,
+            reply_to=reply_to,
+            username=username,
+            display_name=display_name,
+        )
+        await self.core.on_new_message(self.client, event)
+
+    async def pv(self, text, *, user_id, **kw):
+        await self.send(text, user_id=user_id, chat_id=user_id, is_group=False, **kw)
+
+    def texts(self):
+        return [r.message for r in self.client.requests]
+
+    def ai_calls(self):
+        return len(self.ai_client.calls)
+
+    def reply_from(self, user_id, *, username=None, display_name="کاربر", msg_id=77, text=""):
+        return FakeReplyMessage(sender_id=user_id, username=username,
+                                display_name=display_name, msg_id=msg_id, text=text)
+
+
+class TestToggle(AITestCase):
+    def test_1_owner_enables_ai_for_group(self):
+        self.make_owner()
+        self.assertFalse(self.store.ai_is_enabled(GROUP_A))
+
+        run(self.send("ai online", user_id=OWNER))
+
+        self.assertTrue(self.store.ai_is_enabled(GROUP_A))
+        self.assertEqual(self.texts(), [brand.AI_ENABLED_TEXT])
+
+    def test_2_non_owner_cannot_enable(self):
+        self.make_owner()
+        run(self.send("ai online", user_id=USER_1))
+
+        self.assertFalse(self.store.ai_is_enabled(GROUP_A), "غیرمالک نباید AI را روشن کند")
+        self.assertEqual(self.client.requests, [], "هیچ پیامی نباید ارسال شود")
+
+    def test_3_owner_disables_ai(self):
+        self.make_owner()
+        run(self.send("ai online", user_id=OWNER))
+        self.client.requests.clear()
+
+        run(self.send("ai of", user_id=OWNER))
+        self.assertFalse(self.store.ai_is_enabled(GROUP_A))
+        self.assertEqual(self.texts(), [brand.AI_DISABLED_TEXT])
+
+    def test_3b_non_owner_cannot_disable(self):
+        self.make_owner()
+        self.store.ai_set_enabled(GROUP_A, True)
+        run(self.send("ai of", user_id=USER_2))
+
+        self.assertTrue(self.store.ai_is_enabled(GROUP_A), "غیرمالک نباید AI را خاموش کند")
+        self.assertEqual(self.client.requests, [])
+
+    def test_3c_toggle_variants_are_recognized(self):
+        self.make_owner()
+        run(self.send("AI  ONLINE", user_id=OWNER))
+        self.assertTrue(self.store.ai_is_enabled(GROUP_A))
+        run(self.send(" ai   of ", user_id=OWNER))
+        self.assertFalse(self.store.ai_is_enabled(GROUP_A))
+
+
+class TestPermissions(AITestCase):
+    def test_4_owner_allows_user_by_reply(self):
+        self.make_owner()
+        run(self.send("ai list", user_id=OWNER,
+                      reply_to=self.reply_from(USER_1, username="osine")))
+
+        self.assertTrue(self.store.ai_is_allowed(GROUP_A, USER_1))
+        self.assertEqual(self.texts(), [brand.AI_ALLOWED_TEXT.format(user="@osine")])
+
+    def test_5_without_reply_nothing_is_allowed(self):
+        self.make_owner()
+        run(self.send("ai list", user_id=OWNER))
+
+        self.assertEqual(self.store.ai_allowed_users(GROUP_A), [])
+        self.assertEqual(self.texts(), [brand.AI_NEED_REPLY_TEXT])
+
+    def test_6_non_owner_cannot_allow_anyone(self):
+        self.make_owner()
+        # کاربر معمولی حتی با Reply روی پیام خودش هم نباید مجاز شود
+        run(self.send("ai list", user_id=USER_2,
+                      reply_to=self.reply_from(USER_2, username="elism")))
+
+        self.assertFalse(self.store.ai_is_allowed(GROUP_A, USER_2))
+        self.assertEqual(self.client.requests, [])
+
+    def test_7_owner_revokes_permission(self):
+        self.make_owner()
+        run(self.send("ai list", user_id=OWNER, reply_to=self.reply_from(USER_1, username="osine")))
+        self.assertTrue(self.store.ai_is_allowed(GROUP_A, USER_1))
+        self.client.requests.clear()
+
+        run(self.send("ai list x", user_id=OWNER,
+                      reply_to=self.reply_from(USER_1, username="osine")))
+
+        self.assertFalse(self.store.ai_is_allowed(GROUP_A, USER_1))
+        self.assertEqual(self.texts(), [brand.AI_REVOKED_TEXT.format(user="@osine")])
+
+    def test_7b_revoke_without_permission_reports_not_allowed(self):
+        self.make_owner()
+        run(self.send("ai list x", user_id=OWNER,
+                      reply_to=self.reply_from(USER_1, username="osine")))
+        self.assertEqual(self.texts(), [brand.AI_NOT_ALLOWED_TEXT.format(user="@osine")])
+
+    def test_12b_permission_is_by_user_id_not_username(self):
+        self.make_owner()
+        run(self.send("ai list", user_id=OWNER, reply_to=self.reply_from(USER_1, username="osine")))
+        # همان user_id با username متفاوت → همچنان مجاز
+        self.assertTrue(self.store.ai_is_allowed(GROUP_A, USER_1))
+        self.assertFalse(self.store.ai_is_allowed(GROUP_A, USER_2))
+
+
+class TestChat(AITestCase):
+    def setUp(self):
+        super().setUp()
+        self.make_owner()
+        self.store.ai_set_enabled(GROUP_A, True)
+
+    def test_8_unauthorized_user_gets_denial_without_api_call(self):
+        run(self.send("سلام", user_id=USER_1, reply_to=self.reply_from(USER_2)))
+
+        self.assertEqual(self.ai_calls(), 0, "برای کاربر غیرمجاز نباید API صدا زده شود")
+        self.assertEqual(self.texts(), [brand.AI_DENIED_TEXT])
+
+    def test_9_authorized_user_gets_ai_reply(self):
+        self.store.ai_allow_user(GROUP_A, USER_1, username="osine")
+        run(self.send("هوای تهران چطوره؟", user_id=USER_1,
+                      reply_to=self.reply_from(USER_2, msg_id=77)))
+
+        self.assertEqual(self.ai_calls(), 1)
+        self.assertEqual(self.texts(), [self.ai_client.reply])
+        # پاسخ باید Reply روی همان پیام کاربر باشد و در همان گروه
+        req = self.client.requests[-1]
+        self.assertEqual(req.peer.chat_id, abs(GROUP_A))
+        self.assertIsInstance(req.reply_to, types.InputReplyToMessage)
+        self.assertEqual(req.reply_to.reply_to_msg_id, 1)   # id پیام کاربر در FakeEvent
+
+    def test_9b_owner_can_talk_to_ai(self):
+        run(self.send("سلام", user_id=OWNER, reply_to=self.reply_from(USER_2)))
+        self.assertEqual(self.ai_calls(), 1)
+        self.assertEqual(self.texts(), [self.ai_client.reply])
+
+    def test_10_message_without_reply_never_calls_api(self):
+        self.store.ai_allow_user(GROUP_A, USER_1)
+        run(self.send("سلام بدون ریپلای", user_id=USER_1))
+
+        self.assertEqual(self.ai_calls(), 0)
+        self.assertEqual(self.client.requests, [])
+
+    def test_13_disabled_ai_never_calls_api(self):
+        self.store.ai_set_enabled(GROUP_A, False)
+        self.store.ai_allow_user(GROUP_A, USER_1)
+        run(self.send("سلام", user_id=USER_1, reply_to=self.reply_from(USER_2)))
+
+        self.assertEqual(self.ai_calls(), 0)
+        self.assertEqual(self.client.requests, [])
+
+    def test_13b_media_or_empty_text_is_ignored(self):
+        self.store.ai_allow_user(GROUP_A, USER_1)
+        run(self.send("   ", user_id=USER_1, reply_to=self.reply_from(USER_2)))
+
+        self.assertEqual(self.ai_calls(), 0)
+        self.assertEqual(self.client.requests, [])
+
+
+class TestQuota(AITestCase):
+    def setUp(self):
+        super().setUp()
+        self.make_owner()
+        self.store.ai_set_enabled(GROUP_A, True)
+        self.store.ai_allow_user(GROUP_A, USER_1, username="osine")
+
+    def test_14_internal_quota_exhaustion_blocks_further_requests(self):
+        cfg_small = Config.from_env()
+        # سهمیه‌ی کوچک: ۲ درخواست در روز برای این گروه
+        object.__setattr__(cfg_small, "ai_daily_quota", 2)
+        ai = GroupAI(cfg_small, self.store, self.sender, self.ai_client)
+        core = BotCore(cfg_small, self.store, self.sender, ai=ai)
+
+        async def ask(text):
+            event = FakeEvent(text, user_id=USER_1, chat_id=GROUP_A, is_group=True,
+                              reply_to=self.reply_from(USER_2))
+            await core.on_new_message(self.client, event)
+
+        run(ask("یک"))
+        run(ask("دو"))
+        self.assertEqual(self.ai_calls(), 2)
+        self.client.requests.clear()
+
+        run(ask("سه"))          # سهمیه تمام شده
+        self.assertEqual(self.ai_calls(), 2, "بعد از پایان سهمیه نباید درخواست برود")
+        self.assertEqual(self.texts(), [brand.AI_QUOTA_TEXT])
+
+        run(ask("چهار"))
+        self.assertEqual(self.ai_calls(), 2)
+        self.assertEqual(self.texts(), [brand.AI_QUOTA_TEXT, brand.AI_QUOTA_TEXT])
+
+    def test_14b_cloudflare_quota_error_marks_day_as_exhausted(self):
+        self.ai_client.error = AIQuotaExceeded("HTTP 429 | daily free allocation of 10,000 neurons")
+
+        run(self.send("سلام", user_id=USER_1, reply_to=self.reply_from(USER_2)))
+
+        self.assertEqual(self.texts(), [brand.AI_QUOTA_TEXT])
+        self.assertEqual(self.store.ai_usage(GROUP_A, utc_day()), self.cfg.ai_daily_quota)
+
+        self.client.requests.clear()
+        run(self.send("سلام دوباره", user_id=USER_1, reply_to=self.reply_from(USER_2)))
+        self.assertEqual(self.texts(), [brand.AI_QUOTA_TEXT])   # دیگر درخواست نمی‌رود
+        self.assertEqual(self.ai_calls(), 1)
+
+    def test_14c_config_error_is_reported(self):
+        self.ai_client.error = AIConfigError("token نیست")
+        run(self.send("سلام", user_id=USER_1, reply_to=self.reply_from(USER_2)))
+        self.assertEqual(self.texts(), [brand.AI_CONFIG_ERROR_TEXT])
+
+    def test_15_long_message_is_truncated_per_request(self):
+        long_text = "س" * 10_000
+        run(self.send(long_text, user_id=USER_1, reply_to=self.reply_from(USER_2)))
+
+        self.assertEqual(self.ai_calls(), 1, "یک پیام بلند باید فقط یک درخواست بسازد")
+        sent = self.ai_client.calls[0]
+        user_message = [m for m in sent if m["role"] == "user"][-1]
+        self.assertLessEqual(len(user_message["content"]), self.cfg.ai_max_input_chars)
+        self.assertEqual(self.store.ai_usage(GROUP_A, utc_day()), 1)
+
+    def test_15b_history_is_bounded(self):
+        for i in range(6):
+            run(self.send(f"پیام {i}", user_id=USER_1, reply_to=self.reply_from(USER_2)))
+
+        last_call = self.ai_client.calls[-1]
+        # system + حداکثر (ai_history_pairs * 2) پیام
+        self.assertLessEqual(
+            len(last_call), 1 + self.cfg.ai_history_pairs * 2 + 1
+        )
+        self.assertTrue(self.store.ai_is_enabled(GROUP_A))
+
+
+class TestPerGroupIsolation(AITestCase):
+    def test_12_permission_in_group_a_does_not_apply_to_group_b(self):
+        self.make_owner()
+        self.store.ai_set_enabled(GROUP_A, True)
+        self.store.ai_set_enabled(GROUP_B, True)
+        self.store.ai_allow_user(GROUP_A, USER_1, username="osine")
+
+        # گروه A → پاسخ می‌گیرد
+        run(self.send("سلام", user_id=USER_1, chat_id=GROUP_A,
+                      reply_to=self.reply_from(USER_2)))
+        self.assertEqual(self.texts(), [self.ai_client.reply])
+        self.client.requests.clear()
+
+        # گروه B → همان کاربر مجاز نیست
+        run(self.send("سلام", user_id=USER_1, chat_id=GROUP_B,
+                      reply_to=self.reply_from(USER_2)))
+        self.assertEqual(self.texts(), [brand.AI_DENIED_TEXT])
+
+    def test_12b_enable_in_group_a_does_not_enable_group_b(self):
+        self.make_owner()
+        run(self.send("ai online", user_id=OWNER, chat_id=GROUP_A))
+
+        self.assertTrue(self.store.ai_is_enabled(GROUP_A))
+        self.assertFalse(self.store.ai_is_enabled(GROUP_B))
+
+    def test_12c_disable_in_group_a_keeps_group_b_enabled(self):
+        self.make_owner()
+        self.store.ai_set_enabled(GROUP_A, True)
+        self.store.ai_set_enabled(GROUP_B, True)
+
+        run(self.send("ai of", user_id=OWNER, chat_id=GROUP_A))
+
+        self.assertFalse(self.store.ai_is_enabled(GROUP_A))
+        self.assertTrue(self.store.ai_is_enabled(GROUP_B))
+
+    def test_12d_quota_is_counted_per_group(self):
+        self.make_owner()
+        self.store.ai_set_enabled(GROUP_A, True)
+        self.store.ai_set_enabled(GROUP_B, True)
+        self.store.ai_allow_user(GROUP_A, USER_1)
+        self.store.ai_allow_user(GROUP_B, USER_1)
+
+        run(self.send("الف", user_id=USER_1, chat_id=GROUP_A, reply_to=self.reply_from(USER_2)))
+        run(self.send("ب", user_id=USER_1, chat_id=GROUP_B, reply_to=self.reply_from(USER_2)))
+
+        day = utc_day()
+        self.assertEqual(self.store.ai_usage(GROUP_A, day), 1)
+        self.assertEqual(self.store.ai_usage(GROUP_B, day), 1)
+
+
+class TestPVIsolation(AITestCase):
+    def test_11_pv_never_triggers_ai_features(self):
+        self.make_owner()
+
+        for text in ("ai online", "ai of", "ai list", "ai list x"):
+            run(self.pv(text, user_id=OWNER))
+
+        self.assertFalse(self.store.ai_is_enabled(GROUP_A))
+        self.assertFalse(self.store.ai_is_enabled(OWNER))
+        self.assertEqual(self.store.ai_allowed_users(GROUP_A), [])
+        self.assertEqual(self.ai_calls(), 0)
+        # PV رفتار خودش را دارد: هر کاربر جدید → معرفی + منو
+        self.assertEqual(self.texts()[:2], [brand.FULL_TEXT, brand.MENU_TEXT])
+
+    def test_11b_pv_chat_does_not_call_ai_even_with_reply(self):
+        self.make_owner()
+        self.store.ai_set_enabled(GROUP_A, True)
+        self.store.ai_allow_user(GROUP_A, OWNER)
+
+        run(self.pv("سلام", user_id=OWNER, reply_to=self.reply_from(USER_2)))
+
+        self.assertEqual(self.ai_calls(), 0, "PV نباید AI را فعال کند")
+        self.assertEqual(self.texts(), [brand.FULL_TEXT, brand.MENU_TEXT])   # رفتار PV
+
+    def test_11c_ai_commands_do_not_break_pv_menu(self):
+        self.make_owner()
+        run(self.pv("سازنده", user_id=USER_1))     # اولین پیام → معرفی + منو
+        self.client.requests.clear()
+
+        run(self.pv("سازنده", user_id=USER_1))     # پیام بعدی → پاسخ منو
+        self.assertEqual(self.texts(), ["@osine2"])
+
+
+class TestPersistence(AITestCase):
+    def test_16_state_survives_restart(self):
+        self.make_owner()
+        run(self.send("ai online", user_id=OWNER, chat_id=GROUP_A))
+        run(self.send("ai list", user_id=OWNER, chat_id=GROUP_A,
+                      reply_to=self.reply_from(USER_1, username="osine")))
+        run(self.send("سلام", user_id=USER_1, chat_id=GROUP_A,
+                      reply_to=self.reply_from(USER_2)))     # یک مصرف سهمیه
+        self.store.close()
+
+        store2 = OwnerStore(self.db)                            # ری‌استارت
+        try:
+            self.assertTrue(store2.ai_is_enabled(GROUP_A))
+            self.assertTrue(store2.ai_is_allowed(GROUP_A, USER_1))
+            self.assertEqual(store2.ai_usage(GROUP_A, utc_day()), 1)
+            self.assertFalse(store2.ai_is_enabled(GROUP_B))
+
+            ai_client2 = FakeAI(reply="پاسخ بعد از ری‌استارت")
+            ai2 = GroupAI(self.cfg, store2, self.sender, ai_client2)
+            core2 = BotCore(self.cfg, store2, self.sender, ai=ai2)
+            client2 = FakeClient()
+
+            async def scenario():
+                event = FakeEvent("سلام بعد از ری‌استارت", user_id=USER_1,
+                                  chat_id=GROUP_A, is_group=True,
+                                  reply_to=self.reply_from(USER_2))
+                await core2.on_new_message(client2, event)
+
+            run(scenario())
+            self.assertEqual(len(ai_client2.calls), 1, "کاربر مجاز بعد از ری‌استارت هم مجاز است")
+            self.assertEqual([r.message for r in client2.requests], ["پاسخ بعد از ری‌استارت"])
+        finally:
+            store2.close()
+            self.store = OwnerStore(self.db)
+
+
+class TestSafety(AITestCase):
+    def test_17_group_commands_unchanged(self):
+        # رگرسیون: دستورهای گروهی قبلی با وجود AI سالم بمانند
+        self.make_owner()
+        run(self.send("کدرز", user_id=USER_2))
+        self.assertEqual(self.client.requests[-1].message, brand.FULL_TEXT)
+
+        self.client.requests.clear()
+        run(self.send("ai cod", user_id=USER_2))          # مالک قبلی ثابت می‌ماند
+        self.assertEqual(self.client.requests, [])
+        self.assertEqual(self.store.get_owner().user_id, OWNER)
+
+    def test_17b_non_ai_group_messages_are_ignored(self):
+        self.make_owner()
+        self.store.ai_set_enabled(GROUP_A, True)
+        run(self.send("سلام به همه", user_id=USER_1))
+
+        self.assertEqual(self.client.requests, [])
+        self.assertEqual(self.ai_calls(), 0)
+
+    def test_17c_user_cannot_self_authorize_with_plain_text(self):
+        self.make_owner()
+        self.store.ai_set_enabled(GROUP_A, True)
+        run(self.send("ai list", user_id=USER_1, reply_to=self.reply_from(USER_1)))
+
+        self.assertFalse(self.store.ai_is_allowed(GROUP_A, USER_1))
+
+    def test_17d_ai_commands_require_owner_even_with_reply(self):
+        self.make_owner()
+        run(self.send("ai list x", user_id=USER_1, reply_to=self.reply_from(USER_2)))
+        self.assertEqual(self.client.requests, [])
+
+    def test_17e_outgoing_messages_are_ignored(self):
+        self.make_owner()
+        self.store.ai_set_enabled(GROUP_A, True)
+        self.store.ai_allow_user(GROUP_A, USER_1)
+        run(self.send("ai online", user_id=OWNER, out=True))
+        run(self.send("سلام", user_id=USER_1, out=True, reply_to=self.reply_from(USER_2)))
+
+        self.assertEqual(self.ai_calls(), 0)
+
+    def test_17f_ai_model_default_matches_requested_model(self):
+        self.assertEqual(self.cfg.ai_model, "@cf/zai-org/glm-4.7-flash")
+
+    def test_17g_system_prompt_is_sent_first(self):
+        self.make_owner()
+        self.store.ai_set_enabled(GROUP_A, True)
+        self.store.ai_allow_user(GROUP_A, USER_1)
+        run(self.send("سلام", user_id=USER_1, reply_to=self.reply_from(USER_2)))
+
+        messages = self.ai_client.calls[0]
+        self.assertEqual(messages[0]["role"], "system")
+        self.assertEqual(messages[0]["content"], brand.AI_SYSTEM_PROMPT)
+
+
+class TestBackwardCompatibility(unittest.TestCase):
+    """دیتابیس ساخته‌شده در Phase 6 باید بدون خرابی با نسخه‌ی جدید باز شود."""
+
+    OLD_SCHEMA = """
+    CREATE TABLE global_owner (
+        slot INTEGER PRIMARY KEY CHECK (slot = 1),
+        user_id INTEGER NOT NULL UNIQUE,
+        username TEXT,
+        display_name TEXT,
+        claimed_chat_id INTEGER NOT NULL,
+        claimed_message_id INTEGER,
+        claimed_at TEXT NOT NULL
+    );
+    CREATE TABLE owner_attempts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        chat_id INTEGER NOT NULL,
+        message_id INTEGER,
+        display_name TEXT,
+        result TEXT NOT NULL,
+        at TEXT NOT NULL
+    );
+    CREATE TABLE pv_users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL UNIQUE,
+        username TEXT,
+        display_name TEXT,
+        first_seen_at TEXT NOT NULL
+    );
+    """
+
+    def test_old_database_upgrades_cleanly_and_keeps_data(self):
+        import sqlite3
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "state.sqlite3"
+            raw = sqlite3.connect(db)
+            raw.executescript(self.OLD_SCHEMA)
+            raw.execute(
+                "INSERT INTO global_owner (slot, user_id, username, display_name,"
+                " claimed_chat_id, claimed_message_id, claimed_at)"
+                " VALUES (1, 111, 'osine', 'مالک', -1001, 5, '2026-01-01T00:00:00+00:00')"
+            )
+            raw.execute(
+                "INSERT INTO pv_users (user_id, username, display_name, first_seen_at)"
+                " VALUES (501, 'user_1', 'کاربر ۱', '2026-01-01T00:00:00+00:00')"
+            )
+            raw.commit()
+            raw.close()
+
+            store = OwnerStore(db)          # ← جدول‌های AI باید خودکار ساخته شوند
+            try:
+                self.assertEqual(store.get_owner().user_id, 111)      # مالک حفظ شده
+                self.assertEqual(store.count_pv_users(), 1)           # کاربران PV حفظ شده
+                self.assertTrue(store.register_pv_user(502))    # ثبت کاربر جدید PV (True = جدید)
+                self.assertFalse(store.register_pv_user(502))    # تکراری ⇒ جدید نیست
+
+                # و متدهای AI روی همان دیتابیس کار کنند
+                store.ai_set_enabled(-1001, True)
+                store.ai_allow_user(-1001, 501, username="user_1")
+                self.assertTrue(store.ai_is_enabled(-1001))
+                self.assertTrue(store.ai_is_allowed(-1001, 501))
+                self.assertTrue(store.ai_consume_quota(-1001, "2026-10-08", 3))
+                self.assertEqual(store.ai_usage(-1001, "2026-10-08"), 1)
+            finally:
+                store.close()
+
+
+class TestRealClientIntegration(AITestCase):
+    """مسیر کامل GroupAI → CloudflareAI → HTTP (جعلی) → پارس پاسخ → ارسال."""
+
+    def test_17h_end_to_end_with_real_client_and_fake_http(self):
+        from ai_client import CloudflareAI
+        from tests.test_ai_client import FakeSession
+
+        session = FakeSession(payload={
+            "result": {"response": "تهران آفتابی است."}, "success": True,
+            "errors": [], "messages": [],
+        })
+        real_client = CloudflareAI(
+            "acct-123", "tok-abc", "@cf/zai-org/glm-4.7-flash",
+            timeout=5, max_output_tokens=128, session=session,
+        )
+        ai = GroupAI(self.cfg, self.store, self.sender, real_client)
+        core = BotCore(self.cfg, self.store, self.sender, ai=ai)
+
+        self.store.claim(OWNER, chat_id=GROUP_A, message_id=1, display_name="مالک")
+        self.store.ai_set_enabled(GROUP_A, True)
+        self.store.ai_allow_user(GROUP_A, USER_1, username="osine")
+
+        async def scenario():
+            event = FakeEvent("هوای تهران چطوره؟", user_id=USER_1, chat_id=GROUP_A,
+                              is_group=True, reply_to=self.reply_from(USER_2))
+            await core.on_new_message(self.client, event)
+
+        run(scenario())
+
+        # درخواست واقعی به endpoint واقعی Cloudflare رفته و پاسخ همان مدل برگشته
+        self.assertEqual(len(session.calls), 1)
+        self.assertEqual(
+            session.calls[0]["url"],
+            "https://api.cloudflare.com/client/v4/accounts/acct-123/ai/run/"
+            "@cf/zai-org/glm-4.7-flash",
+        )
+        self.assertEqual(session.calls[0]["body"]["max_tokens"], 128)
+        self.assertEqual([r.message for r in self.client.requests], ["تهران آفتابی است."])
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

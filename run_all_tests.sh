@@ -3,5 +3,5 @@
 set -e
 cd "$(dirname "$0")"
 
-echo "=== تست‌های ۳۸گانه ==="
+echo "=== اجرای همه‌ی تست‌های پروژه (رگرسیون کامل) ==="
 python -m unittest discover -s tests -t . -v
