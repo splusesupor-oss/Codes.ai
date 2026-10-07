@@ -190,6 +190,69 @@ class TestEnvFile(unittest.TestCase):
     def test_missing_env_file_is_silent(self):
         self.assertEqual(config_module.load_env_file("/nonexistent/.env"), 0)
 
+    def test_exact_variable_names_are_read_from_env_file(self):
+        """نام‌ها باید دقیقاً CLOUDFLARE_ACCOUNT_ID و CLOUDFLARE_API_TOKEN باشند."""
+        import os
+
+        keys = ("CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN")
+        old = {k: os.environ.get(k) for k in keys}
+        with tempfile.TemporaryDirectory() as tmp:
+            env = Path(tmp) / "verify.env"
+            env.write_text("CLOUDFLARE_ACCOUNT_ID=acct-verify\n"
+                           "CLOUDFLARE_API_TOKEN=tok-verify\n", encoding="utf-8")
+            for k in keys:
+                os.environ.pop(k, None)
+            try:
+                self.assertEqual(config_module.load_env_file(env), 2)
+                cfg = config_module.Config.from_env()
+                self.assertEqual(cfg.cloudflare_account_id, "acct-verify")
+                self.assertEqual(cfg.cloudflare_api_token, "tok-verify")
+                self.assertTrue(CloudflareAI(
+                    cfg.cloudflare_account_id, cfg.cloudflare_api_token, cfg.ai_model
+                ).configured)
+                self.assertIn("acct-verify", CloudflareAI(
+                    cfg.cloudflare_account_id, cfg.cloudflare_api_token, cfg.ai_model
+                ).url())
+            finally:
+                for k, v in old.items():
+                    if v is None:
+                        os.environ.pop(k, None)
+                    else:
+                        os.environ[k] = v
+
+    def test_empty_values_in_env_file_are_safe(self):
+        """مثل .env.example: اگر مقادیر خالی بمانند، ربات فقط «تنظیم نشده» می‌شود (بدون کرش)."""
+        import os
+
+        keys = ("CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN")
+        old = {k: os.environ.get(k) for k in keys}
+        with tempfile.TemporaryDirectory() as tmp:
+            env = Path(tmp) / "verify.env"
+            env.write_text("CLOUDFLARE_ACCOUNT_ID=\nCLOUDFLARE_API_TOKEN=\n", encoding="utf-8")
+            for k in keys:
+                os.environ.pop(k, None)
+            try:
+                self.assertEqual(config_module.load_env_file(env), 2)
+                cfg = config_module.Config.from_env()
+                self.assertIsNone(cfg.cloudflare_account_id)
+                self.assertIsNone(cfg.cloudflare_api_token)
+                client = CloudflareAI("", "", cfg.ai_model)
+                self.assertFalse(client.configured)
+                with self.assertRaises(AIConfigError):
+                    run(client.chat([{"role": "user", "content": "x"}]))
+            finally:
+                for k, v in old.items():
+                    if v is None:
+                        os.environ.pop(k, None)
+                    else:
+                        os.environ[k] = v
+
+    def test_placeholder_values_are_not_treated_as_real(self):
+        for value in ("your_cloudflare_account_id", "", "   ", "xxx-xxx", "<change>"):
+            with self.subTest(value=repr(value)):
+                self.assertFalse(CloudflareAI(value, value, "m").configured)
+        self.assertTrue(CloudflareAI("acct-123", "tok-456", "m").configured)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

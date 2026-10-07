@@ -550,13 +550,13 @@ python manage.py reset-owner --yes  # فقط برای تست
 ## ۷. تست‌ها
 
 ```bash
-./run_all_tests.sh          # یا: python -m unittest discover -s tests -t . -v   (195 تست)
+./run_all_tests.sh          # یا: python -m unittest discover -s tests -t . -v   (198 تست)
 ```
 
 خروجی واقعی اجرای تست‌ها در همین محیط:
 
 ```
-Ran 195 tests in 0.60s
+Ran 198 tests in 0.570s
 OK
 ```
 
@@ -594,7 +594,7 @@ OK
 | برای هر حالت فقط پیام همان حالت | `test_only_the_matching_message_is_sent_for_each_state` |
 | سازگاری دیتابیس قدیمی (Phase 6) با جداول AI | `test_old_database_upgrades_cleanly_and_keeps_data` |
 | خودکار مجاز نشدن با username / دستورها فقط مالک | `test_17c_user_cannot_self_authorize_with_plain_text` / `test_17d_…` |
-| صحت endpoint/پارس پاسخ/تشخیص سهمیه‌ی Cloudflare | `tests/test_ai_client.py` (۱۲ تست، آفلاین) |
+| صحت endpoint/پارس پاسخ/تشخیص سهمیه‌ی Cloudflare | `tests/test_ai_client.py` (۱۵ تست، آفلاین) |
 
 تست‌های کلیدی مطابق خواسته‌ی شما:
 
