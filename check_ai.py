@@ -24,6 +24,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -206,7 +207,19 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
 
     env_path = Path(args.env) if args.env else BASE_DIR / ".env"
-    load_env_file(env_path)
+    if args.env:
+        # کاربر صراحتاً مسیر دیگری داده — فقط از همان فایل باید اعتبارها خوانده شود.
+        # ابتدا هر مقدار CLOUDFLARE_* که به‌خاطر side-effect ایمپورتِ config (از .env
+        # پیش‌فرض) یا متغیرهای پوسته در os.environ نشسته را پاک می‌کنیم تا نشتی به
+        # Config نرسد؛ سپس با override=True فقط از مسیر داده‌شده می‌خوانیم. اگر مسیر
+        # وجود نداشته باشد، load_env_file هیچ متغیری ست نمی‌کند و نتیجه «تنظیم‌نشده»
+        # خواهد بود (و شاخه‌ی بدون‌شبکه فعال می‌شود).
+        for _var in ("CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"):
+            os.environ.pop(_var, None)
+        load_env_file(env_path, override=True)
+    else:
+        # مسیر پیش‌فرض — همان رفتار قبلی: .env کنار پروژه + متغیرهای پوسته.
+        load_env_file(env_path)
     cfg = Config.from_env()
 
     report = config_report(cfg, env_path)

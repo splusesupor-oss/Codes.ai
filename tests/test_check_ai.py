@@ -184,16 +184,46 @@ class TestCliBehaviour(unittest.TestCase):
         self.assertIn("بدون تماس واقعی", buffer.getvalue())
 
     def test_missing_config_fails_cleanly_without_network(self):
+        """وقتی --env به فایل ناموجود اشاره می‌کند، باید بدون هیچ تماس شبکه
+        (حتی اگر os.environ به‌خاطر side-effectهای import-time پر شده باشد) با
+        پیام «تنظیم‌نشده» و exit 1 خارج شود."""
         import io
+        import os
+        import asyncio
         from contextlib import redirect_stdout
+        from unittest.mock import patch
+
+        # متغیرهای محیط را از قبل با مقادیر جعلی پر می‌کنیم تا side-effect
+        # ایمپورتِ config (که .env پیش‌فرض را می‌خواند) شبیه‌سازی شود.
+        os.environ["CLOUDFLARE_ACCOUNT_ID"] = "0123456789abcdef0123456789abcdef"
+        os.environ["CLOUDFLARE_API_TOKEN"] = "preloaded-fake-token-from-env"
+        network_called = {"yes": False}
+
+        real_asyncio_run = asyncio.run
+
+        def fake_run(coro):
+            network_called["yes"] = True
+            return real_asyncio_run(coro)
 
         buffer = io.StringIO()
-        with redirect_stdout(buffer):
-            code = check_ai.main(["--env", "/nonexistent/.env"])
+        try:
+            with patch.object(asyncio, "run", side_effect=fake_run):
+                with redirect_stdout(buffer):
+                    code = check_ai.main(["--env", "/nonexistent/.env"])
+        finally:
+            os.environ.pop("CLOUDFLARE_ACCOUNT_ID", None)
+            os.environ.pop("CLOUDFLARE_API_TOKEN", None)
+
+        self.assertFalse(network_called["yes"],
+                         "نباید هنگام اعتبارناقص، asyncio.run/run_live_check صدا زده شود")
         self.assertEqual(code, 1)
         output = buffer.getvalue()
+        self.assertIn("پیدا نشد", output)
         self.assertIn("تنظیم‌نشده", output)
         self.assertIn("ناموفق", output)
+        # و اعتبارنامه‌ی جعلیِ پیش‌بارگذاری‌شده نباید در گزارش ظاهر شود.
+        self.assertNotIn("preloaded-fake-token-from-env", output)
+        self.assertNotIn("0123456789abcdef0123456789abcdef", output)
 
 
 if __name__ == "__main__":
