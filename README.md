@@ -246,20 +246,28 @@ python bot.py
 
 ## ۵. دستورات ربات و قوانین مالکیت
 
-### دستور ۱ — `ai cod` (فعال‌سازی مالک سراسری)
+### دستور ۱ — `ai cod` / `ai code` (فعال‌سازی توسط مالک سراسری)
 
 | قانون | وضعیت در پیاده‌سازی |
 | --- | --- |
 | اولین کاربری که در هر گروهی `ai cod` بفرستد، مالک می‌شود | ✅ `OwnerStore.claim()` |
 | مالکیت وابسته به گروه نیست | ✅ فقط `user_id` ملاک است (`test_ownership_is_not_group_dependent`) |
 | بعد از تعیین مالک، هیچ کاربر دیگری در هیچ گروهی مالک نمی‌شود | ✅ `already_other_owner` → کاملاً نادیده گرفته می‌شود |
-| اگر همان مالک در گروه دیگر `ai cod` بزند، مالک جدید ساخته نمی‌شود | ✅ `already_same_owner` (پیش‌فرض: بدون پاسخ؛ با `ANNOUNCE_ON_OWNER_REPEAT=True` فقط پیام معرفی) |
+| اگر همان مالک در گروه دیگر `ai cod` بزند، مالک جدید ساخته نمی‌شود | ✅ `already_same_owner` |
+| مالک با هر بار فرستادن `ai cod`/`ai code` ربات را در همان گروه فعال/معرفی می‌کند و **همان متن اولیه** ارسال می‌شود | ✅ پیش‌فرض `ANNOUNCE_ON_OWNER_REPEAT=True` (قابل خاموش‌کردن) |
+| دو املا پذیرفته می‌شود: `ai cod` و `ai code` | ✅ `ACOD_OWNER_ALIASES=ai cod,ai code` |
 | ثبت اتمیک | ✅ `BEGIN IMMEDIATE` + `PRIMARY KEY CHECK(slot=1)` + تست چندپروسه‌ای |
 | پایداری با ری‌استارت | ✅ فایل `data/owner.sqlite3` (`test_owner_survives_restart`) |
 
 پس از ثبت موفق مالک، **پیام فعال‌سازی** (همان پیام معرفی) در همان گروه ارسال می‌شود.
 
 ### دستور ۲ — `کدرز` (معرفی ربات)
+
+> **دامنه‌ی «فقط مالک»:** تصمیم شما این است که دستورهای **AI و مدیریتی** فقط برای مالک سراسری
+> باشند؛ «کدرز» مثل قبل برای **همه‌ی کاربران در همه‌ی گروه‌ها** کار می‌کند.
+> فهرست فقط-مالک: `ai cod`/`ai code`، `ai online`، `ai of`، `ai list`، `ai list x`،
+> `تعداد اعضا`، `لیست اعضا`.
+
 
 هر کاربری در هر گروهی `کدرز` بفرستد، ربات همان پیام معرفی را با قالب یکسان ارسال می‌کند
 (بدون نیاز به مالک‌بودن).
@@ -539,13 +547,13 @@ python manage.py reset-owner --yes  # فقط برای تست
 ## ۷. تست‌ها
 
 ```bash
-./run_all_tests.sh          # یا: python -m unittest discover -s tests -t . -v   (180 تست)
+./run_all_tests.sh          # یا: python -m unittest discover -s tests -t . -v   (192 تست)
 ```
 
 خروجی واقعی اجرای تست‌ها در همین محیط:
 
 ```
-Ran 180 tests in 0.59s
+Ran 192 tests in 0.59s
 OK
 ```
 
@@ -574,6 +582,8 @@ OK
 | سهمیه‌ی پیش‌فرض هر گروه = ۵۰۰۰ درخواست در روز | `test_default_quota_is_5000_per_group` / `test_group_can_use_exactly_5000_requests_in_a_day` |
 | ۵۰۰۰ مستقل per-group و per-day (و بسته‌شدن درخواست ۵۰۰۱اُم) | `test_5000_quota_is_per_group_and_per_day` |
 | جریان واقعی چت در مرز سهمیه‌ی روزانه | `test_whole_chat_flow_works_at_boundary_of_daily_quota` |
+| «ai cod»/«ai code» فقط مالک + فعال‌سازی در هر گروه با متن اولیه | `tests/test_flow.py` → `TestOwnerActivationInGroups` (۹ تست) |
+| پذیرش املای «ai code» | `test_owner_command_accepts_ai_code_spelling` (test_commands) |
 | قالب دقیق online/off/list/listx/عدم‌دسترسی (کاراکتربه‌کاراکتر) | `tests/test_ai.py` → `TestExactSystemTemplates` (۱۵ تست) |
 | حفظ دو فاصله/آکولاد/Variation Selector در قالب‌ها | `test_double_space_between_of_ai_and_user_is_preserved` / `test_online_has_no_space_before_closing_brace_but_offline_has` |
 | نقل‌قول شیشه‌ای + Bold روی همه‌ی پیام‌های سیستمی AI | `test_ai_system_messages_use_project_style_blockquote_and_bold` |
@@ -637,6 +647,8 @@ OK
 | `ACOD_DATA_DIR` | `./data` | محل سشن و دیتابیس |
 | `ACOD_PHONE` / `ACOD_PASSWORD` | — | لاگین غیرتعاملی |
 | `ACOD_OWNER_COMMAND` | `ai cod` | متن دستور مالک |
+| `ACOD_OWNER_ALIASES` | `ai cod,ai code` | املاهای پذیرفته‌شده‌ی دستور مالک |
+| `ACOD_ANNOUNCE_ON_OWNER_REPEAT` | `1` | هر بار مالک دستور را بفرستد، متن معرفی ارسال شود |
 | `ACOD_KODREZ_COMMAND` | `کدرز` | متن دستور معرفی |
 | `ACOD_GROUPS_ONLY` | `1` | دستورها (`ai cod`/`کدرز`) فقط در گروه پردازش شوند (بی‌اثر روی PV) |
 | `ACOD_PRIVATE_AUTO_REPLY` | `1` | هر پیام خصوصی ورودی → ارسال خودکار پیام معرفی |

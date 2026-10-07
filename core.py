@@ -69,12 +69,21 @@ def _normalization_variants(text: str) -> set[str]:
     }
 
 
+def owner_command_variants(cfg: Config) -> set:
+    """همه‌ی املاهای پذیرفته‌شده‌ی دستور مالک: «ai cod» و «ai code» (قابل تغییر با env)."""
+    commands = (cfg.owner_command,) + tuple(cfg.owner_command_aliases)
+    variants = set()
+    for command in commands:
+        variants |= _normalization_variants(command)
+    return variants
+
+
 def match_command(text: str, cfg: Config) -> Optional[str]:
-    """تشخیص دستور: 'owner' برای «ai cod» و 'kodrez' برای «کدرز»."""
+    """تشخیص دستور: 'owner' برای «ai cod»/«ai code» و 'kodrez' برای «کدرز»."""
     if not text or not text.strip():
         return None
     given = _normalization_variants(text)
-    if given & _normalization_variants(cfg.owner_command):
+    if given & owner_command_variants(cfg):
         return "owner"
     if given & _normalization_variants(cfg.kodrez_command):
         return "kodrez"

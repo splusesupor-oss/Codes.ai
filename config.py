@@ -56,6 +56,8 @@ def load_env_file(path: str | Path | None = None, *, override: bool = False) -> 
 # دستورات
 # ---------------------------------------------------------------------------
 OWNER_COMMAND = "ai cod"      # دستور فعال‌سازی مالک سراسری (اولین کاربر = مالک دائمی)
+# املاهای پذیرفته‌شده‌ی همین دستور (هر دو «ai cod» و «ai code» یک دستورند)
+OWNER_COMMAND_ALIASES = ("ai cod", "ai code")
 KODREZ_COMMAND = "کدرز"       # دستور معرفی؛ برای همه آزاد است
 
 # ---------------------------------------------------------------------------
@@ -126,7 +128,9 @@ QUOTE_REPLY_FALLBACK_TO_ENTITY = True
 # اگر همان مالکِ قبلی دوباره «ai cod» بزند:
 #   False → کاملاً نادیده گرفته شود (مالک جدیدی ساخته نمی‌شود)  [پیش‌فرض]
 #   True  → پیام معرفی برای او ارسال شود (ولی باز هم مالک جدید ساخته نمی‌شود)
-ANNOUNCE_ON_OWNER_REPEAT = False
+# هر بار مالک سراسری «ai cod» را در یک گروه بفرستد، همان متن معرفی (پیام اولیه) ارسال شود
+# → یعنی مالک می‌تواند ربات «ai fox» را در هر گروهی که می‌خواهد فعال/معرفی کند.
+ANNOUNCE_ON_OWNER_REPEAT = True
 
 
 @dataclass(frozen=True)
@@ -149,6 +153,7 @@ class Config:
 
     # --- دستورات و پرچم‌ها ---
     owner_command: str = OWNER_COMMAND
+    owner_command_aliases: tuple = OWNER_COMMAND_ALIASES
     kodrez_command: str = KODREZ_COMMAND
     groups_only: bool = GROUPS_ONLY
     private_auto_reply: bool = PRIVATE_AUTO_REPLY
@@ -184,10 +189,18 @@ class Config:
             twofa_password=os.environ.get("ACOD_PASSWORD") or None,
             db_path=Path(os.environ.get("ACOD_DB", DATA_DIR / "owner.sqlite3")),
             owner_command=os.environ.get("ACOD_OWNER_COMMAND", OWNER_COMMAND),
+            owner_command_aliases=tuple(
+                a.strip() for a in os.environ.get(
+                    "ACOD_OWNER_ALIASES", ",".join(OWNER_COMMAND_ALIASES)
+                ).split(",") if a.strip()
+            ),
             kodrez_command=os.environ.get("ACOD_KODREZ_COMMAND", KODREZ_COMMAND),
             groups_only=os.environ.get("ACOD_GROUPS_ONLY", "1") not in ("0", "false", "False"),
             private_auto_reply=os.environ.get("ACOD_PRIVATE_AUTO_REPLY", "1")
             not in ("0", "false", "False"),
+            announce_on_owner_repeat=os.environ.get(
+                "ACOD_ANNOUNCE_ON_OWNER_REPEAT", "1" if ANNOUNCE_ON_OWNER_REPEAT else "0"
+            ) not in ("0", "false", "False"),
             pv_count_command=os.environ.get("ACOD_PV_COUNT_COMMAND", PV_COUNT_COMMAND),
             pv_list_command=os.environ.get("ACOD_PV_LIST_COMMAND", PV_LIST_COMMAND),
             pv_unknown_name=os.environ.get("ACOD_PV_UNKNOWN_NAME", PV_UNKNOWN_NAME),
