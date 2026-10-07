@@ -167,12 +167,17 @@ class BrandSender:
             log.warning("ارسال پیام متنی ناموفق بود → %s", err)
             return report
 
-    async def send_styled(self, client, chat, text: str) -> SendReport:
+    async def send_styled(
+        self, client, chat, text: str, *, reply_to_msg_id: Optional[int] = None
+    ) -> SendReport:
         """ارسال یک متن دلخواه با «قالب استاندارد پروژه»: نقل‌قول شیشه‌ای + Bold.
 
         همان زنجیره‌ی fallback پیام معرفی اجرا می‌شود:
             blockquote+bold → bold-only → متن ساده
         بنابراین اگر سرور سروش entity نقل‌قول را نپذیرد، ارسال شکست نمی‌خورد.
+
+        در صورت نیاز می‌توان پیام را به‌صورت Reply روی ``reply_to_msg_id`` فرستاد
+        (پیام‌های سیستم هوش مصنوعی همین کار را می‌کنند).
         """
         peer = await self._resolve_peer(client, chat)
         plan = [
@@ -189,6 +194,7 @@ class BrandSender:
                         peer=peer,
                         message=text,
                         entities=entities or None,
+                        reply_to=self._plain_reply(reply_to_msg_id),
                         no_webpage=not self.cfg.link_preview,
                     )
                 )

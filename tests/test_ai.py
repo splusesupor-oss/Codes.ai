@@ -178,11 +178,13 @@ class TestPermissions(AITestCase):
         self.assertFalse(self.store.ai_is_allowed(GROUP_A, USER_1))
         self.assertEqual(self.texts(), [brand.AI_REVOKED_TEXT.format(user="@osine")])
 
-    def test_7b_revoke_without_permission_reports_not_allowed(self):
+    def test_7b_revoke_when_user_was_not_allowed_sends_same_of_template(self):
+        """برای «ai list x» فقط همان پیام حالت مربوطه ارسال می‌شود (بدون متن اضافه)."""
         self.make_owner()
         run(self.send("ai list x", user_id=OWNER,
                       reply_to=self.reply_from(USER_1, username="osine")))
-        self.assertEqual(self.texts(), [brand.AI_NOT_ALLOWED_TEXT.format(user="@osine")])
+        self.assertEqual(self.texts(), [brand.AI_REVOKED_TEXT.format(user="@osine")])
+        self.assertFalse(self.store.ai_is_allowed(GROUP_A, USER_1))
 
     def test_12b_permission_is_by_user_id_not_username(self):
         self.make_owner()
@@ -373,6 +375,174 @@ class TestDailyQuotaValue(AITestCase):
         self.store.ai_allow_user(GROUP_B, USER_1)
         run(self.send("سلام", user_id=USER_1, chat_id=GROUP_B, reply_to=self.reply_from(USER_2)))
         self.assertEqual(self.ai_calls(), 1)
+
+
+class TestExactSystemTemplates(AITestCase):
+    """مقایسه‌ی خروجی با «متن دقیق قالب‌ها» (کپی مستقل، بدون استفاده از ثابت‌های brand).
+
+    نکات دقیقِ قالب که این تست‌ها نگه می‌دارند:
+      * online: «{ 𝗮𝗰𝗼𝗱 𝗳𝗼𝘅}» بدون فاصله قبل از } — offline: «{ 𝗮𝗰𝗼𝗱 𝗳𝗼𝗫 }» با فاصله
+      * دو فاصله بین «𝗔𝗜» و «𝗨𝗭𝗘𝗥» در قالب حذف دسترسی
+      * 𝖢𝖮︎𝖣︎𝖤︎𝖱︎ با Variation Selector، دو فاصله تا 𝖠︎𝖨︎، و «بایدمالک» سرِهم
+    """
+
+    EXACT_ONLINE = "֍ 𝗢𝗡𝗟𝗜𝗡𝗘 { 𝗮𝗰𝗼𝗱 𝗳𝗼𝘅} 🏕"
+    EXACT_OFFLINE = "֎ 𝗢𝗙𝗙𝗟𝗜𝗡𝗘 { 𝗮𝗰𝗼𝗱 𝗳𝗼𝘅 } 🏜"
+    EXACT_ALLOWED = "☰ 𝗔𝗜 𝗨𝗭𝗘𝗥 : 「{user}」\n๏ 𝗳𝗼𝘅 𝗮𝗶 𝗰𝗼𝗱𝗲 🍂"
+    EXACT_REVOKED = "☰ 𝗢𝗙 𝗔𝗜  𝗨𝗭𝗘𝗥 : 「{user}」\n๏ 𝗳𝗼𝘅 𝗮𝗶 𝗰𝗼𝗱𝗲 🪴"
+    EXACT_DENIED = ("شما مجاز به صحبت کردن با هوش مصنوعی "
+                    "𝖢𝖮︎𝖣︎𝖤︎𝖱︎  𝖠︎𝖨︎ نیستید برای صحبت بایدمالک به شما دسترسی بدهد 🦦🎊")
+
+    def setUp(self):
+        super().setUp()
+        self.make_owner()
+
+    # ---------------------------------------------------------------- online/of
+    def test_online_message_is_exactly_the_requested_template(self):
+        run(self.send("ai online", user_id=OWNER))
+        self.assertEqual(self.texts(), [self.EXACT_ONLINE])
+        self.assertEqual(self.client.requests[-1].message, "֍ 𝗢𝗡𝗟𝗜𝗡𝗘 { 𝗮𝗰𝗼𝗱 𝗳𝗼𝘅} 🏕")
+        self.assertTrue(self.store.ai_is_enabled(GROUP_A))
+
+    def test_offline_message_is_exactly_the_requested_template(self):
+        self.store.ai_set_enabled(GROUP_A, True)
+        run(self.send("ai of", user_id=OWNER))
+        self.assertEqual(self.texts(), [self.EXACT_OFFLINE])
+        self.assertFalse(self.store.ai_is_enabled(GROUP_A))
+
+    # -------------------------------------------------------------- ai list
+    def test_allow_message_is_exactly_the_requested_template_with_username(self):
+        run(self.send("ai list", user_id=OWNER,
+                      reply_to=self.reply_from(USER_1, username="ali")))
+        expected = self.EXACT_ALLOWED.format(user="@ali")
+        self.assertEqual([r.message for r in self.client.requests], [expected])
+        self.assertEqual(self.client.requests[-1].message,
+                         "☰ 𝗔𝗜 𝗨𝗭𝗘𝗥 : 「@ali」\n๏ 𝗳𝗼𝘅 𝗮𝗶 𝗰𝗼𝗱𝗲 🍂")
+        self.assertTrue(self.store.ai_is_allowed(GROUP_A, USER_1))
+
+    def test_allow_message_uses_display_name_when_no_username(self):
+        run(self.send("ai list", user_id=OWNER,
+                      reply_to=self.reply_from(USER_1, username=None,
+                                               display_name="علی رضایی")))
+        self.assertEqual(self.texts(), [self.EXACT_ALLOWED.format(user="علی رضایی")])
+
+    def test_allow_message_uses_safe_fallback_from_real_user_id(self):
+        run(self.send("ai list", user_id=OWNER,
+                      reply_to=self.reply_from(USER_1, username=None, display_name="")))
+        self.assertEqual(self.texts(),
+                         [self.EXACT_ALLOWED.format(user=f"کاربر {USER_1}")])
+
+    # ------------------------------------------------------------ ai list x
+    def test_revoke_message_is_exactly_the_requested_template(self):
+        run(self.send("ai list", user_id=OWNER,
+                      reply_to=self.reply_from(USER_1, username="ali")))
+        self.client.requests.clear()
+
+        run(self.send("ai list x", user_id=OWNER,
+                      reply_to=self.reply_from(USER_1, username="ali")))
+        expected = self.EXACT_REVOKED.format(user="@ali")
+        self.assertEqual([r.message for r in self.client.requests], [expected])
+        self.assertEqual(self.client.requests[-1].message,
+                         "☰ 𝗢𝗙 𝗔𝗜  𝗨𝗭𝗘𝗥 : 「@ali」\n๏ 𝗳𝗼𝘅 𝗮𝗶 𝗰𝗼𝗱𝗲 🪴")
+        self.assertFalse(self.store.ai_is_allowed(GROUP_A, USER_1))
+
+    # ------------------------------------------------------------ غیرمجاز
+    def test_denied_message_is_exactly_the_requested_template_and_no_api_call(self):
+        self.store.ai_set_enabled(GROUP_A, True)
+        run(self.send("سلام", user_id=USER_1, reply_to=self.reply_from(USER_2)))
+
+        self.assertEqual(self.texts(), [self.EXACT_DENIED])
+        self.assertEqual(self.ai_calls(), 0, "برای کاربر غیرمجاز نباید API صدا زده شود")
+        self.assertIn("𝖢𝖮︎𝖣︎𝖤︎𝖱︎  𝖠︎𝖨︎", self.texts()[0])    # دو فاصله + Variation Selector
+        self.assertIn("بایدمالک", self.texts()[0])
+        self.assertNotIn("باید مالک", self.texts()[0])
+
+    # ------------------------------------------------- جزئیات دقیق کاراکترها
+    def test_double_space_between_of_ai_and_user_is_preserved(self):
+        self.assertIn("𝗢𝗙 𝗔𝗜  𝗨𝗭𝗘𝗥", self.EXACT_REVOKED)     # دو فاصله عمدی
+        self.assertNotIn("𝗢𝗙 𝗔𝗜 𝗨𝗭𝗘𝗥", self.EXACT_REVOKED)
+
+    def test_online_has_no_space_before_closing_brace_but_offline_has(self):
+        self.assertIn("{ 𝗮𝗰𝗼𝗱 𝗳𝗼𝘅}", self.EXACT_ONLINE)
+        self.assertNotIn("{ 𝗮𝗰𝗼𝗱 𝗳𝗼𝘅 }", self.EXACT_ONLINE)
+        self.assertIn("{ 𝗮𝗰𝗼𝗱 𝗳𝗼𝘅 }", self.EXACT_OFFLINE)
+
+    def test_templates_in_tests_match_brand_constants_exactly(self):
+        """این تست تضمین می‌کند کپی‌های مستقلِ داخل تست با ثابت‌های پروژه یکی‌اند."""
+        self.assertEqual(brand.AI_ENABLED_TEXT, self.EXACT_ONLINE)
+        self.assertEqual(brand.AI_DISABLED_TEXT, self.EXACT_OFFLINE)
+        self.assertEqual(brand.AI_ALLOWED_TEXT, self.EXACT_ALLOWED)
+        self.assertEqual(brand.AI_REVOKED_TEXT, self.EXACT_REVOKED)
+        self.assertEqual(brand.AI_DENIED_TEXT, self.EXACT_DENIED)
+
+    def test_braces_and_curly_quotes_and_emojis_are_exact(self):
+        self.assertTrue(self.EXACT_ONLINE.endswith("🏕"))
+        self.assertTrue(self.EXACT_OFFLINE.endswith("🏜"))
+        self.assertTrue(self.EXACT_ALLOWED.startswith("☰ 𝗔𝗜 𝗨𝗭𝗘𝗥 : 「"))
+        self.assertTrue(self.EXACT_ALLOWED.endswith("🍂"))
+        self.assertTrue(self.EXACT_REVOKED.startswith("☰ 𝗢𝗙 𝗔𝗜  𝗨𝗭𝗘𝗥 : 「"))
+        self.assertTrue(self.EXACT_REVOKED.endswith("🪴"))
+        self.assertTrue(self.EXACT_ONLINE.startswith("֍"))
+        self.assertTrue(self.EXACT_OFFLINE.startswith("֎"))
+
+    # ------------------------------------------------------ قالب‌بندی پروژه
+    def test_ai_system_messages_use_project_style_blockquote_and_bold(self):
+        """قالب موجود پروژه: کل متن داخل «نقل‌قول شیشه‌ای» + هر خط Bold."""
+        scenarios = [
+            ("ai online", OWNER, None),
+            ("ai of", OWNER, None),
+            ("ai list", OWNER, self.reply_from(USER_1, username="ali")),
+            ("ai list x", OWNER, self.reply_from(USER_1, username="ali")),
+        ]
+        self.store.ai_set_enabled(GROUP_A, True)
+        for text, user, reply in scenarios:
+            with self.subTest(command=text):
+                self.client.requests.clear()
+                run(self.send(text, user_id=user, reply_to=reply))
+                msg = self.client.requests[-1]
+                kinds = [type(e).__name__ for e in (msg.entities or [])]
+                self.assertIn("MessageEntityBlockquote", kinds)
+                self.assertIn("MessageEntityBold", kinds)
+                quote = [e for e in msg.entities
+                         if type(e).__name__ == "MessageEntityBlockquote"][0]
+                self.assertEqual((quote.offset, quote.length),
+                                 (0, brand.utf16_len(msg.message)))
+
+    def test_denied_message_is_also_styled(self):
+        self.store.ai_set_enabled(GROUP_A, True)
+        run(self.send("سلام", user_id=USER_1, reply_to=self.reply_from(USER_2)))
+        kinds = [type(e).__name__ for e in (self.client.requests[-1].entities or [])]
+        self.assertEqual(kinds.count("MessageEntityBold"), 1)
+        self.assertIn("MessageEntityBlockquote", kinds)
+
+    # ------------------------------------------------- فقط پیام همان حالت
+    def test_only_the_matching_message_is_sent_for_each_state(self):
+        self.store.ai_set_enabled(GROUP_A, True)
+
+        cases = [
+            ("ai online", None, self.EXACT_ONLINE),
+            ("ai list", self.reply_from(USER_1, username="ali"),
+             self.EXACT_ALLOWED.format(user="@ali")),
+            ("ai list x", self.reply_from(USER_1, username="ali"),
+             self.EXACT_REVOKED.format(user="@ali")),
+            ("ai of", None, self.EXACT_OFFLINE),
+        ]
+        for command, reply, expected in cases:
+            with self.subTest(command=command):
+                self.client.requests.clear()
+                run(self.send(command, user_id=OWNER, reply_to=reply))
+                self.assertEqual(len(self.client.requests), 1)
+                self.assertEqual(self.client.requests[0].message, expected)
+
+    def test_no_extra_message_is_sent_on_non_matching_events(self):
+        """پیام بدون Reply / بدون متن / غیرمجاز → فقط پیام حالت خودش."""
+        self.store.ai_set_enabled(GROUP_A, True)
+        run(self.send("ai list", user_id=OWNER))            # بدون Reply
+        self.assertEqual(self.client.requests[-1].message, brand.AI_NEED_REPLY_TEXT)
+
+        self.client.requests.clear()
+        run(self.send("سلام", user_id=USER_2, reply_to=self.reply_from(USER_1)))
+        self.assertEqual(self.texts(), [self.EXACT_DENIED])   # کاربر مجاز نیست
 
 
 class TestPerGroupIsolation(AITestCase):

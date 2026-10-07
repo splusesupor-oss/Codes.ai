@@ -70,7 +70,13 @@ class GroupAI:
         return bool(user_id) and self.store.is_owner(user_id)
 
     @staticmethod
-    def _user_label(message, fallback: str) -> str:
+    def _user_label(message, user_id: int, fallback_prefix: str) -> str:
+        """برچسب کاربر همان‌طور که در قالب خواسته شده:
+
+        * username دارد  → «@username»
+        * ندارد          → نام نمایشی
+        * هیچ‌کدام ندارد → fallback امن از اطلاعات واقعی کاربر («کاربر <user_id>»)
+        """
         sender = getattr(message, "sender", None)
         username = (getattr(sender, "username", None) or "").strip().lstrip("@")
         if username:
@@ -78,7 +84,7 @@ class GroupAI:
         first = (getattr(sender, "first_name", "") or "").strip()
         last = (getattr(sender, "last_name", "") or "").strip()
         name = f"{first} {last}".strip()
-        return name or fallback
+        return name or f"{fallback_prefix} {user_id}"
 
     def _push_history(self, chat_id: int, role: str, content: str) -> None:
         if self.cfg.ai_history_pairs <= 0:
@@ -135,7 +141,7 @@ class GroupAI:
             await self._reply(client, event, brand.AI_NEED_REPLY_TEXT)
             return True
 
-        label = self._user_label(reply_message, self.cfg.pv_unknown_name)
+        label = self._user_label(reply_message, target_id, brand.AI_USER_FALLBACK_PREFIX)
         target_username = getattr(getattr(reply_message, "sender", None), "username", None)
 
         if command == "list":
@@ -149,8 +155,8 @@ class GroupAI:
         if command == "listx":
             removed = self.store.ai_revoke_user(chat_id, target_id)
             log.info("حذف مجوز کاربر %s در گروه %s → %s", target_id, chat_id, removed)
-            template = brand.AI_REVOKED_TEXT if removed else brand.AI_NOT_ALLOWED_TEXT
-            await self._reply(client, event, template.format(user=label))
+            # طبق قالب خواسته‌شده، برای دستور «ai list x» فقط همین پیام ارسال می‌شود
+            await self._reply(client, event, brand.AI_REVOKED_TEXT.format(user=label))
             return True
 
         return True
@@ -220,8 +226,13 @@ class GroupAI:
 
     # ------------------------------------------------------------------ کمکی‌ها
     async def _reply(self, client, event, text: str) -> None:
-        """ارسال پیام سیستمی AI در پاسخ به همان پیام کاربر."""
-        report = await self.sender.send_text(
+        """ارسال پیام سیستمی AI در پاسخ به همان پیام کاربر.
+
+        از همان قالب موجود پروژه استفاده می‌شود: «نقل‌قول شیشه‌ای» (Blockquote)
+        + Bold برای خطوط، با زنجیره‌ی fallback
+        (blockquote+bold → bold-only → متن ساده). متن پیام دست‌نخورده می‌ماند.
+        """
+        report = await self.sender.send_styled(
             client,
             await resolve_peer(event),
             text,
