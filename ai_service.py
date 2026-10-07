@@ -228,15 +228,16 @@ class GroupAI:
     async def _reply(self, client, event, text: str) -> None:
         """ارسال پیام سیستمی AI در پاسخ به همان پیام کاربر.
 
-        از همان قالب موجود پروژه استفاده می‌شود: «نقل‌قول شیشه‌ای» (Blockquote)
-        + Bold برای خطوط، با زنجیره‌ی fallback
-        (blockquote+bold → bold-only → متن ساده). متن پیام دست‌نخورده می‌ماند.
+        قالب این پیام‌ها **Bold** است و **نقل‌قول شیشه‌ای (Blockquote) ندارد**
+        (طبق درخواست صریح کاربر). زنجیره‌ی fallback: bold-only → متن ساده.
+        متن پیام دست‌نخورده می‌ماند.
         """
         report = await self.sender.send_styled(
             client,
             await resolve_peer(event),
             text,
             reply_to_msg_id=getattr(event, "id", None),
+            quote=False,
         )
         if not report.ok:
             log.error("ارسال پیام AI ناموفق بود: %s | %s", report.error, report.attempts)

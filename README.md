@@ -399,9 +399,10 @@ fallback معرفی را دارند (`blockquote+bold → bold-only → plain`).
   پیام بدون Reply، پیام بدون متن (مدیا/استیکر) و پیام‌های خودِ حساب ربات نادیده گرفته می‌شوند.
 * کاربر مجاز با **`user_id` واقعی** تشخیص داده می‌شود (username هیچ اعتباری ندارد) و مجوز
   **per-group** است؛ مجوز گروه A روی گروه B اثری ندارد.
-* همه‌ی پیام‌های سیستم AI با همان **قالب موجود پروژه** ارسال می‌شوند:
-  «نقل‌قول شیشه‌ای» (`MessageEntityBlockquote` روی کل متن) + **Bold** روی هر خط، با زنجیره‌ی
-  fallback (`blockquote+bold → bold-only → متن ساده`) و به‌صورت Reply روی همان پیام.
+* پیام‌های سیستم AI **Bold** هستند و **هیچ‌کدام داخل «نقل‌قول شیشه‌ای» (Blockquote) نیستند**
+  (طبق درخواست صریح کاربر). زنجیره‌ی fallback: `bold-only → متن ساده` و ارسال به‌صورت
+  Reply روی همان پیام. (این فقط مربوط به قالب‌های AI است؛ پیام معرفی و منوی PV مثل قبل
+  نقل‌قول شیشه‌ای دارند.)
 * کاربر غیرمجاز دقیقاً این متن را می‌گیرد و **هیچ درخواستی به Cloudflare نمی‌رود**:
   «شما مجاز به صحبت کردن با هوش مصنوعی 𝖢𝖮︎𝖣︎𝖤︎𝖱︎  𝖠︎𝖨︎ نیستید برای صحبت بایدمالک به شما دسترسی بدهد 🦦🎊»
 * پاسخ مدل در **همان گروه** و به‌صورت **Reply روی همان پیام کاربر** ارسال می‌شود.
@@ -433,19 +434,19 @@ fallback معرفی را دارند (`blockquote+bold → bold-only → plain`).
 | --- | --- |
 | `ai online` (مالک، گروه) | `֍ 𝗢𝗡𝗟𝗜𝗡𝗘 { 𝗮𝗰𝗼𝗱 𝗳𝗼𝘅} 🏕` |
 | `ai of` (مالک، گروه) | `֎ 𝗢𝗙𝗙𝗟𝗜𝗡𝗘 { 𝗮𝗰𝗼𝗱 𝗳𝗼𝘅 } 🏜` |
-| `ai list` + Reply | `☰ 𝗔𝗜 𝗨𝗭𝗘𝗥 : 「{یوزرنیم یا نام نمایشی}」` ⏎ `๏ 𝗳𝗼𝘅 𝗮𝗶 𝗰𝗼𝗱𝗲 🍂` |
-| `ai list x` + Reply | `☰ 𝗢𝗙 𝗔𝗜  𝗨𝗭𝗘𝗥 : 「{یوزرنیم یا نام نمایشی}」` ⏎ `๏ 𝗳𝗼𝘅 𝗮𝗶 𝗰𝗼𝗱𝗲 🪴` |
+| `ai list` + Reply | `☰ 𝗔𝗜 𝗨𝗭𝗘𝗥 : 「 {یوزرنیم یا نام نمایشی} 」` ⏎ `๏ 𝗳𝗼𝘅 𝗮𝗶 𝗰𝗼𝗱𝗲 🍂` |
+| `ai list x` + Reply | `☰ 𝗢𝗙 𝗔𝗜  𝗨𝗭𝗘𝗥 : 「 {یوزرنیم یا نام نمایشی} 」` ⏎ `๏ 𝗳𝗼𝘅 𝗮𝗶 𝗰𝗼𝗱𝗲 🪴` |
 | کاربر غیرمجاز (AI روشن + Reply) | `شما مجاز به صحبت کردن با هوش مصنوعی 𝖢𝖮︎𝖣︎𝖤︎𝖱︎  𝖠︎𝖨︎ نیستید برای صحبت بایدمالک به شما دسترسی بدهد 🦦🎊` |
 
 نمونه‌ی دقیق پیام‌های دوخطی (متن واقعی ارسالی، بدون هیچ تغییر):
 
 ```
-☰ 𝗔𝗜 𝗨𝗭𝗘𝗥 : 「@ali」
+☰ 𝗔𝗜 𝗨𝗭𝗘𝗥 : 「 @ali 」
 ๏ 𝗳𝗼𝘅 𝗮𝗶 𝗰𝗼𝗱𝗲 🍂
 ```
 
 ```
-☰ 𝗢𝗙 𝗔𝗜  𝗨𝗭𝗘𝗥 : 「@ali」
+☰ 𝗢𝗙 𝗔𝗜  𝗨𝗭𝗘𝗥 : 「 @ali 」
 ๏ 𝗳𝗼𝘅 𝗮𝗶 𝗰𝗼𝗱𝗲 🪴
 ```
 
@@ -456,6 +457,8 @@ fallback معرفی را دارند (`blockquote+bold → bold-only → plain`).
 * در قالب حذف دسترسی بین `𝗔𝗜` و `𝗨𝗭𝗘𝗥` **دو فاصله** وجود دارد (عمدی و حفظ شده).
 * در پیام عدم دسترسی، `𝖢𝖮︎𝖣︎𝖤︎𝖱︎` و `𝖠︎𝖨︎` با Variation Selector (U+FE0E) هستند، بین‌شان دو فاصله است و
   «بایدمالک» سرِهم نوشته شده است — بدون هیچ تغییری.
+* نام کاربر **با فاصله در دو طرف** داخل `「 」` قرار می‌گیرد: `「 @ali 」` — هرگز چسبیده به
+  آکولادها (`「@ali」`) نوشته نمی‌شود.
 * نام کاربر: `@username` → وگرنه نام نمایشی → وگرنه fallback امن از اطلاعات واقعی کاربر
   (`کاربر <user_id>`).
 * برای هر حالت **فقط پیام همان حالت** ارسال می‌شود؛ هیچ متن اضافه‌ای همراه آن نمی‌رود
@@ -547,13 +550,13 @@ python manage.py reset-owner --yes  # فقط برای تست
 ## ۷. تست‌ها
 
 ```bash
-./run_all_tests.sh          # یا: python -m unittest discover -s tests -t . -v   (192 تست)
+./run_all_tests.sh          # یا: python -m unittest discover -s tests -t . -v   (195 تست)
 ```
 
 خروجی واقعی اجرای تست‌ها در همین محیط:
 
 ```
-Ran 192 tests in 0.59s
+Ran 195 tests in 0.60s
 OK
 ```
 
@@ -584,9 +587,10 @@ OK
 | جریان واقعی چت در مرز سهمیه‌ی روزانه | `test_whole_chat_flow_works_at_boundary_of_daily_quota` |
 | «ai cod»/«ai code» فقط مالک + فعال‌سازی در هر گروه با متن اولیه | `tests/test_flow.py` → `TestOwnerActivationInGroups` (۹ تست) |
 | پذیرش املای «ai code» | `test_owner_command_accepts_ai_code_spelling` (test_commands) |
-| قالب دقیق online/off/list/listx/عدم‌دسترسی (کاراکتربه‌کاراکتر) | `tests/test_ai.py` → `TestExactSystemTemplates` (۱۵ تست) |
+| قالب دقیق online/off/list/listx/عدم‌دسترسی (کاراکتربه‌کاراکتر) | `tests/test_ai.py` → `TestExactSystemTemplates` (۱۹ تست) |
 | حفظ دو فاصله/آکولاد/Variation Selector در قالب‌ها | `test_double_space_between_of_ai_and_user_is_preserved` / `test_online_has_no_space_before_closing_brace_but_offline_has` |
-| نقل‌قول شیشه‌ای + Bold روی همه‌ی پیام‌های سیستمی AI | `test_ai_system_messages_use_project_style_blockquote_and_bold` |
+| Bold بودن پیام‌های AI و **نبود** نقل‌قول شیشه‌ای در آن‌ها | `test_ai_system_messages_are_bold_without_glass_quote` / `test_no_glass_quote_in_any_ai_system_message` |
+| فاصله‌ی اجباری داخل `「 」` (چسبیده نبودن به یوزرنیم) | `test_username_has_spaces_inside_the_brackets` / `test_brackets_never_stick_to_the_name` |
 | برای هر حالت فقط پیام همان حالت | `test_only_the_matching_message_is_sent_for_each_state` |
 | سازگاری دیتابیس قدیمی (Phase 6) با جداول AI | `test_old_database_upgrades_cleanly_and_keeps_data` |
 | خودکار مجاز نشدن با username / دستورها فقط مالک | `test_17c_user_cannot_self_authorize_with_plain_text` / `test_17d_…` |

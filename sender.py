@@ -168,23 +168,34 @@ class BrandSender:
             return report
 
     async def send_styled(
-        self, client, chat, text: str, *, reply_to_msg_id: Optional[int] = None
+        self,
+        client,
+        chat,
+        text: str,
+        *,
+        reply_to_msg_id: Optional[int] = None,
+        quote: bool = True,
     ) -> SendReport:
-        """ارسال یک متن دلخواه با «قالب استاندارد پروژه»: نقل‌قول شیشه‌ای + Bold.
+        """ارسال یک متن دلخواه با «قالب استاندارد پروژه»: Bold (و در حالت پیش‌فرض نقل‌قول شیشه‌ای).
 
-        همان زنجیره‌ی fallback پیام معرفی اجرا می‌شود:
-            blockquote+bold → bold-only → متن ساده
-        بنابراین اگر سرور سروش entity نقل‌قول را نپذیرد، ارسال شکست نمی‌خورد.
+        زنجیره‌ی fallback:
+            * ``quote=True``  → blockquote+bold → bold-only → متن ساده
+            * ``quote=False`` → bold-only → متن ساده   (بدون هیچ Blockquote)
 
-        در صورت نیاز می‌توان پیام را به‌صورت Reply روی ``reply_to_msg_id`` فرستاد
-        (پیام‌های سیستم هوش مصنوعی همین کار را می‌کنند).
+        بنابراین اگر سرور سروش entity را نپذیرد، ارسال شکست نمی‌خورد.
+        با ``reply_to_msg_id`` پیام به‌صورت Reply روی همان پیام فرستاده می‌شود.
         """
         peer = await self._resolve_peer(client, chat)
-        plan = [
-            ("blockquote+bold", brand.quote_bold_entities(text, quote=True, bold=True)),
-            ("bold-only", brand.quote_bold_entities(text, quote=False, bold=True)),
-            ("plain", []),
-        ]
+        bold_only = ("bold-only", brand.quote_bold_entities(text, quote=False, bold=True))
+        plan = (
+            [
+                ("blockquote+bold", brand.quote_bold_entities(text, quote=True, bold=True)),
+                bold_only,
+                ("plain", []),
+            ]
+            if quote
+            else [bold_only, ("plain", [])]
+        )
         report = SendReport(ok=False, attempts=[])
 
         for name, entities in plan:

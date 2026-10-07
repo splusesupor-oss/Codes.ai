@@ -388,8 +388,8 @@ class TestExactSystemTemplates(AITestCase):
 
     EXACT_ONLINE = "֍ 𝗢𝗡𝗟𝗜𝗡𝗘 { 𝗮𝗰𝗼𝗱 𝗳𝗼𝘅} 🏕"
     EXACT_OFFLINE = "֎ 𝗢𝗙𝗙𝗟𝗜𝗡𝗘 { 𝗮𝗰𝗼𝗱 𝗳𝗼𝘅 } 🏜"
-    EXACT_ALLOWED = "☰ 𝗔𝗜 𝗨𝗭𝗘𝗥 : 「{user}」\n๏ 𝗳𝗼𝘅 𝗮𝗶 𝗰𝗼𝗱𝗲 🍂"
-    EXACT_REVOKED = "☰ 𝗢𝗙 𝗔𝗜  𝗨𝗭𝗘𝗥 : 「{user}」\n๏ 𝗳𝗼𝘅 𝗮𝗶 𝗰𝗼𝗱𝗲 🪴"
+    EXACT_ALLOWED = "☰ 𝗔𝗜 𝗨𝗭𝗘𝗥 : 「 {user} 」\n๏ 𝗳𝗼𝘅 𝗮𝗶 𝗰𝗼𝗱𝗲 🍂"
+    EXACT_REVOKED = "☰ 𝗢𝗙 𝗔𝗜  𝗨𝗭𝗘𝗥 : 「 {user} 」\n๏ 𝗳𝗼𝘅 𝗮𝗶 𝗰𝗼𝗱𝗲 🪴"
     EXACT_DENIED = ("شما مجاز به صحبت کردن با هوش مصنوعی "
                     "𝖢𝖮︎𝖣︎𝖤︎𝖱︎  𝖠︎𝖨︎ نیستید برای صحبت بایدمالک به شما دسترسی بدهد 🦦🎊")
 
@@ -417,7 +417,7 @@ class TestExactSystemTemplates(AITestCase):
         expected = self.EXACT_ALLOWED.format(user="@ali")
         self.assertEqual([r.message for r in self.client.requests], [expected])
         self.assertEqual(self.client.requests[-1].message,
-                         "☰ 𝗔𝗜 𝗨𝗭𝗘𝗥 : 「@ali」\n๏ 𝗳𝗼𝘅 𝗮𝗶 𝗰𝗼𝗱𝗲 🍂")
+                         "☰ 𝗔𝗜 𝗨𝗭𝗘𝗥 : 「 @ali 」\n๏ 𝗳𝗼𝘅 𝗮𝗶 𝗰𝗼𝗱𝗲 🍂")
         self.assertTrue(self.store.ai_is_allowed(GROUP_A, USER_1))
 
     def test_allow_message_uses_display_name_when_no_username(self):
@@ -443,7 +443,7 @@ class TestExactSystemTemplates(AITestCase):
         expected = self.EXACT_REVOKED.format(user="@ali")
         self.assertEqual([r.message for r in self.client.requests], [expected])
         self.assertEqual(self.client.requests[-1].message,
-                         "☰ 𝗢𝗙 𝗔𝗜  𝗨𝗭𝗘𝗥 : 「@ali」\n๏ 𝗳𝗼𝘅 𝗮𝗶 𝗰𝗼𝗱𝗲 🪴")
+                         "☰ 𝗢𝗙 𝗔𝗜  𝗨𝗭𝗘𝗥 : 「 @ali 」\n๏ 𝗳𝗼𝘅 𝗮𝗶 𝗰𝗼𝗱𝗲 🪴")
         self.assertFalse(self.store.ai_is_allowed(GROUP_A, USER_1))
 
     # ------------------------------------------------------------ غیرمجاز
@@ -478,16 +478,16 @@ class TestExactSystemTemplates(AITestCase):
     def test_braces_and_curly_quotes_and_emojis_are_exact(self):
         self.assertTrue(self.EXACT_ONLINE.endswith("🏕"))
         self.assertTrue(self.EXACT_OFFLINE.endswith("🏜"))
-        self.assertTrue(self.EXACT_ALLOWED.startswith("☰ 𝗔𝗜 𝗨𝗭𝗘𝗥 : 「"))
+        self.assertTrue(self.EXACT_ALLOWED.startswith("☰ 𝗔𝗜 𝗨𝗭𝗘𝗥 : 「 "))
         self.assertTrue(self.EXACT_ALLOWED.endswith("🍂"))
-        self.assertTrue(self.EXACT_REVOKED.startswith("☰ 𝗢𝗙 𝗔𝗜  𝗨𝗭𝗘𝗥 : 「"))
+        self.assertTrue(self.EXACT_REVOKED.startswith("☰ 𝗢𝗙 𝗔𝗜  𝗨𝗭𝗘𝗥 : 「 "))
         self.assertTrue(self.EXACT_REVOKED.endswith("🪴"))
         self.assertTrue(self.EXACT_ONLINE.startswith("֍"))
         self.assertTrue(self.EXACT_OFFLINE.startswith("֎"))
 
-    # ------------------------------------------------------ قالب‌بندی پروژه
-    def test_ai_system_messages_use_project_style_blockquote_and_bold(self):
-        """قالب موجود پروژه: کل متن داخل «نقل‌قول شیشه‌ای» + هر خط Bold."""
+    # ------------------------------------------------------ قالب‌بندی پیام‌ها
+    def test_ai_system_messages_are_bold_without_glass_quote(self):
+        """طبق درخواست صریح کاربر: Bold هست، ولی «نقل‌قول شیشه‌ای» (Blockquote) نیست."""
         scenarios = [
             ("ai online", OWNER, None),
             ("ai of", OWNER, None),
@@ -501,19 +501,53 @@ class TestExactSystemTemplates(AITestCase):
                 run(self.send(text, user_id=user, reply_to=reply))
                 msg = self.client.requests[-1]
                 kinds = [type(e).__name__ for e in (msg.entities or [])]
-                self.assertIn("MessageEntityBlockquote", kinds)
-                self.assertIn("MessageEntityBold", kinds)
-                quote = [e for e in msg.entities
-                         if type(e).__name__ == "MessageEntityBlockquote"][0]
-                self.assertEqual((quote.offset, quote.length),
-                                 (0, brand.utf16_len(msg.message)))
+                self.assertIn("MessageEntityBold", kinds, f"Bold برای {text}")
+                self.assertNotIn(
+                    "MessageEntityBlockquote", kinds,
+                    f"«{text}» نباید داخل نقل‌قول شیشه‌ای باشد",
+                )
+                # هر خط غیرخالی یک Bold مستقل دارد و آفست‌ها UTF-16 هستند
+                bolds = [e for e in msg.entities if type(e).__name__ == "MessageEntityBold"]
+                self.assertEqual(len(bolds), len([l for l in msg.message.split("\n") if l.strip()]))
+                self.assertEqual(bolds[0].offset, 0)
 
-    def test_denied_message_is_also_styled(self):
+    def test_no_glass_quote_in_any_ai_system_message(self):
+        """هیچ‌کدام از پیام‌های سیستمی AI نباید Blockquote داشته باشند."""
+        self.store.ai_set_enabled(GROUP_A, True)
+        run(self.send("ai list", user_id=OWNER, reply_to=self.reply_from(USER_1, username="ali")))
+        run(self.send("سلام", user_id=USER_1, reply_to=self.reply_from(USER_2)))     # عدم دسترسی
+        run(self.send("ai of", user_id=OWNER))
+        run(self.send("ai list", user_id=OWNER))                                     # بدون Reply
+
+        self.assertTrue(self.client.requests)
+        for msg in self.client.requests:
+            kinds = [type(e).__name__ for e in (msg.entities or [])]
+            self.assertNotIn("MessageEntityBlockquote", kinds, msg.message)
+
+    def test_denied_message_has_bold_without_glass_quote(self):
         self.store.ai_set_enabled(GROUP_A, True)
         run(self.send("سلام", user_id=USER_1, reply_to=self.reply_from(USER_2)))
         kinds = [type(e).__name__ for e in (self.client.requests[-1].entities or [])]
         self.assertEqual(kinds.count("MessageEntityBold"), 1)
-        self.assertIn("MessageEntityBlockquote", kinds)
+        self.assertNotIn("MessageEntityBlockquote", kinds)
+
+    def test_username_has_spaces_inside_the_brackets(self):
+        """قالب درخواستی: 「 @Aifox 」 — با فاصله در دو طرف نام (نه چسبیده)."""
+        run(self.send("ai list", user_id=OWNER,
+                      reply_to=self.reply_from(USER_1, username="Aifox")))
+        self.assertEqual(self.client.requests[-1].message,
+                         "☰ 𝗔𝗜 𝗨𝗭𝗘𝗥 : 「 @Aifox 」\n๏ 𝗳𝗼𝘅 𝗮𝗶 𝗰𝗼𝗱𝗲 🍂")
+        self.assertIn("「 @Aifox 」", self.client.requests[-1].message)
+
+        self.client.requests.clear()
+        run(self.send("ai list x", user_id=OWNER,
+                      reply_to=self.reply_from(USER_1, username="Aifox")))
+        self.assertIn("「 @Aifox 」", self.client.requests[-1].message)
+
+    def test_brackets_never_stick_to_the_name(self):
+        for template in (self.EXACT_ALLOWED, self.EXACT_REVOKED):
+            self.assertNotIn("「{user}", template)
+            self.assertIn("「 {user} 」", template)
 
     # ------------------------------------------------- فقط پیام همان حالت
     def test_only_the_matching_message_is_sent_for_each_state(self):
