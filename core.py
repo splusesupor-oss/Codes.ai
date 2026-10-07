@@ -264,11 +264,38 @@ class BotCore:
 
     # ------------------------------------------- آمار کاربران PV (فقط مالک)
     async def _send_pv_count(self, client, event) -> None:
-        count = self.store.count_pv_users()
-        text = f"{self.cfg.pv_count_command} : {count}"
-        log.info("دستور «%s» توسط مالک → %s", self.cfg.pv_count_command, text)
-        report = await self.sender.send_text(client, await self._peer_of(event), text)
-        self._log_report(report)
+        """«تعداد اعضا» → تعداد کل + فهرست کامل کاربران PV، به این شکل:
+
+            تعداد اعضا : 3
+
+            1 : @osine
+            2 : ali
+            3 : @elism
+
+        شماره‌گذاری از ۱ و به ترتیب «اولین ثبت» است و اگر لیست بلند شد،
+        به چند پیام متوالی تقسیم می‌شود و شماره‌ها ادامه‌دار می‌مانند
+        (شماره‌ها قبل از تکه‌تکه‌کردن حساب می‌شوند).
+        """
+        users = self.store.list_pv_users()
+        count = len(users)
+        header = f"{self.cfg.pv_count_command} : {count}"
+        log.info("دستور «%s» توسط مالک → %s کاربر",
+                 self.cfg.pv_count_command, count)
+
+        if not users:
+            report = await self.sender.send_text(
+                client, await self._peer_of(event), header
+            )
+            self._log_report(report)
+            return
+
+        lines = format_pv_user_list(users, self.cfg.pv_unknown_name)
+        # سرتیتر + یک خط خالی + فهرست (طبق فرمت خواسته‌شده)
+        chunks = chunk_lines([header, ""] + lines, self.cfg.max_message_chars)
+        for report in await self.sender.send_text_chunked(
+            client, await self._peer_of(event), chunks
+        ):
+            self._log_report(report)
 
     async def _send_pv_list(self, client, event) -> None:
         users = self.store.list_pv_users()

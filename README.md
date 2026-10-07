@@ -325,8 +325,18 @@ fallback معرفی را دارند (`blockquote+bold → bold-only → plain`).
 
 | دستور | پاسخ |
 | --- | --- |
-| `تعداد اعضا` | `تعداد اعضا : 12` |
-| `لیست اعضا` | خطوط شماره‌گذاری‌شده، به ترتیب اولین ثبت |
+| `تعداد اعضا` | تعداد کل **+ فهرست کامل** کاربران PV (یک خط خالی بین آن‌ها) |
+| `لیست اعضا` | فقط خطوط شماره‌گذاری‌شده، به ترتیب اولین ثبت |
+
+نمونه‌ی خروجی `تعداد اعضا`:
+
+```
+تعداد اعضا : 3
+
+1 : @osine
+2 : ali
+3 : @elism
+```
 
 نمونه‌ی «لیست اعضا»:
 
@@ -341,6 +351,9 @@ fallback معرفی را دارند (`blockquote+bold → bold-only → plain`).
 * **لیست طولانی:** خطوط به قطعه‌های حداکثر ۳۵۰۰ کاراکتری شکسته و در چند پیام ارسال
   می‌شوند (سقف واقعی سرور در کتابخانه `utils.split_text(..., limit=4096)` است)، پس
   با محدودیت طول پیام خطا نمی‌خوریم. عدد با `ACOD_MAX_MESSAGE_CHARS` قابل تنظیم است.
+  **شماره‌گذاری قبل از تکه‌تکه‌کردن محاسبه می‌شود، پس در پیام‌های متوالی ادامه‌دار
+  می‌ماند** (۱، ۲، ۳ … بدون پرش یا تکرار). این برای هر دو دستور `تعداد اعضا` و
+  `لیست اعضا` برقرار است.
 * کاربر غیرمالک اگر همین متن را بفرستد، فقط همان **پاسخ خودکار معرفی** را می‌گیرد
   (دستور مدیریتی اجرا نمی‌شود). در گروه‌ها هم این دو دستور اجرا نمی‌شوند.
 * مسیر دستورها کاملاً جدا از منطق مالک سراسری/SQLite قبلی است و چیزی در آن تغییر نکرده.
@@ -407,13 +420,13 @@ python manage.py reset-owner --yes  # فقط برای تست
 ## ۷. تست‌ها
 
 ```bash
-./run_all_tests.sh          # یا: python -m unittest discover -s tests -t . -v   (۱۰۰ تست)
+./run_all_tests.sh          # یا: python -m unittest discover -s tests -t . -v   (۱۱۰ تست)
 ```
 
 خروجی واقعی اجرای تست‌ها در همین محیط:
 
 ```
-Ran 100 tests in 0.17s
+Ran 110 tests in 0.22s
 OK
 ```
 
@@ -441,7 +454,12 @@ OK
 | «ثبت یک‌بارِ کاربر PV + جلوگیری از تکرار» | `test_11_…` / `test_12_repeated_messages_do_not_duplicate` |
 | «نمایش @username / نام نمایشی / کاربر بدون نام» | `test_18` / `test_19` / `test_20_unknown_name_fallback` |
 | «شماره‌گذاری چند کاربر» | `test_22_multiple_users_are_numbered_in_order` |
-| «تعداد اعضا» و «لیست اعضا» برای مالک | `test_23_count_command_for_owner` / `test_24_list_command_for_owner` |
+| «تعداد اعضا» (تعداد + فهرست کامل) | `test_23_count_command_shows_count_and_full_list` |
+| «لیست اعضا» برای مالک | `test_24_list_command_for_owner` |
+| «فرمت دقیق خروجی تعداد اعضا» | `test_36_format_is_exactly_count_blank_line_then_numbered_list` |
+| «شماره‌گذاری از ۱ و به ترتیب اولین ثبت» | `test_37_numbering_starts_at_1_in_registration_order` |
+| «تعداد اعضا: چند پیام با شماره‌گذاری ادامه‌دار» | `test_43_long_list_is_split_with_continuous_numbering` |
+| «لیست اعضا دست‌نخورده» | `test_44_list_command_is_still_unchanged` |
 | «کاربر غیرمالک نتواند اجرا کند» | `test_25_non_owner_cannot_use_admin_commands` |
 | «پیام گروهی وارد آمار PV نشود» | `test_16_group_messages_never_enter_pv_stats` |
 | «تکه‌تکه‌شدن لیست بلند» | `test_29` / `test_30_long_list_is_sent_in_multiple_messages` |

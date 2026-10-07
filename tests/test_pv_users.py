@@ -171,15 +171,26 @@ class TestLabels(PvUsersTestCase):
 
 
 class TestOwnerCommands(PvUsersTestCase):
-    def test_23_count_command_for_owner(self):
+    def test_23_count_command_shows_count_and_full_list(self):
+        # «تعداد اعضا» → تعداد + فهرست کامل کاربران PV، در یک پیام (اگر کوتاه باشد)
         self.make_owner()
-        for uid in (USER_2, USER_3, 444):
-            run(self.pv("سلام", user_id=uid))
+        run(self.pv("سلام", user_id=USER_2, username="osine"))
+        run(self.pv("سلام", user_id=USER_3, username=None, display_name="ali"))
+        run(self.pv("سلام", user_id=444, username="elism"))
 
         self.client.requests.clear()
-        run(self.pv("تعداد اعضا", user_id=OWNER_ID))
+        run(self.pv("تعداد اعضا", user_id=OWNER_ID, display_name="مالک"))
 
-        self.assertEqual(self.sent_texts(), ["تعداد اعضا : 4"])   # ۳ کاربر + خود مالک
+        self.assertEqual(len(self.client.requests), 1)
+        self.assertEqual(
+            self.client.requests[0].message,
+            "تعداد اعضا : 4\n"          # ۳ کاربر + خود مالک
+            "\n"
+            "1 : @osine\n"
+            "2 : ali\n"
+            "3 : @elism\n"
+            "4 : مالک",
+        )
 
     def test_24_list_command_for_owner(self):
         self.make_owner()
@@ -327,3 +338,146 @@ class TestRegression(PvUsersTestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestCountWithList(PvUsersTestCase):
+    """دستور «تعداد اعضا»: تعداد + فهرست کامل کاربران PV (اصلاح جدید)."""
+
+    def _count_reply(self, *, owner_id=OWNER_ID):
+        self.client.requests.clear()
+        run(self.pv("تعداد اعضا", user_id=owner_id, display_name="مالک"))
+        return [r.message for r in self.client.requests]
+
+    def test_36_format_is_exactly_count_blank_line_then_numbered_list(self):
+        self.make_owner()
+        run(self.pv("سلام", user_id=USER_2, username="osine"))
+        run(self.pv("سلام", user_id=USER_3, username=None, display_name="ali"))
+        run(self.pv("سلام", user_id=444, username="elism"))
+
+        messages = self._count_reply()
+
+        self.assertEqual(
+            messages,
+            ["تعداد اعضا : 4\n\n1 : @osine\n2 : ali\n3 : @elism\n4 : مالک"],
+        )
+
+    def test_37_numbering_starts_at_1_in_registration_order(self):
+        self.make_owner()
+        run(self.pv("سلام", user_id=USER_3, username="first_user"))
+        run(self.pv("سلام", user_id=USER_2, username="second_user"))
+        run(self.pv("سلام", user_id=444, username="third_user"))
+
+        lines = self._count_reply()[0].split("\n")
+        self.assertEqual(lines[0], "تعداد اعضا : 4")
+        self.assertEqual(lines[1], "")
+        self.assertEqual(lines[2:], [
+            "1 : @first_user",
+            "2 : @second_user",
+            "3 : @third_user",
+            "4 : مالک",
+        ])
+
+    def test_38_username_then_display_name_then_safe_fallback(self):
+        self.make_owner()
+        run(self.pv("سلام", user_id=USER_2, username="osine", display_name="علی"))
+        run(self.pv("سلام", user_id=USER_3, username=None, display_name="ali"))
+        run(self.pv("سلام", user_id=444, username=None, display_name=""))
+
+        body = self._count_reply()[0].split("\n\n", 1)[1]
+        self.assertEqual(
+            body.split("\n"),
+            ["1 : @osine", "2 : ali", "3 : کاربر بدون نام", "4 : مالک"],
+        )
+
+    def test_39_each_user_appears_only_once(self):
+        self.make_owner()
+        for _ in range(4):
+            run(self.pv("سلام", user_id=USER_2, username="osine"))
+            run(self.pv("سازنده", user_id=USER_2))          # پیام‌های بعدی همان کاربر
+
+        messages = self._count_reply()
+        self.assertTrue(messages[0].startswith("تعداد اعضا : 2"))
+        self.assertEqual(messages[0].count("@osine"), 1)
+
+    def test_40_group_users_are_not_in_the_list(self):
+        self.make_owner()
+        run(self.group("کدرز", user_id=USER_2))
+        run(self.group("ai cod", user_id=USER_3))
+        run(self.pv("سلام", user_id=444, username="elism"))
+
+        messages = self._count_reply()
+        self.assertTrue(messages[0].startswith("تعداد اعضا : 2"))   # elism + مالک
+        self.assertNotIn("User", messages[0])
+
+    def test_41_only_global_owner_can_run_it(self):
+        self.make_owner()
+        run(self.pv("سلام", user_id=USER_2, username="osine"))      # اولین پیام → ثبت
+        run(self.pv("سلام", user_id=USER_3, username="elism"))
+        self.client.requests.clear()
+
+        run(self.pv("تعداد اعضا", user_id=USER_2))
+        run(self.pv("تعداد اعضا", user_id=USER_3))
+
+        self.assertEqual(self.client.requests, [],
+                         "غیرمالک نباید هیچ خروجی آماری بگیرد")
+
+    def test_42_empty_storage_sends_only_the_header(self):
+        # حالت بدون هیچ کاربر ثبت‌شده (فراخوانی مستقیم، بدون ثبت خود مالک)
+        self.make_owner()
+
+        async def scenario():
+            event = FakeEvent("تعداد اعضا", user_id=OWNER_ID, chat_id=OWNER_ID,
+                              is_group=False, display_name="مالک")
+            await self.core._send_pv_count(self.client, event)
+
+        run(scenario())
+        self.assertEqual([r.message for r in self.client.requests], ["تعداد اعضا : 0"])
+
+    def test_43_long_list_is_split_with_continuous_numbering(self):
+        self.make_owner()
+        for i in range(600):
+            self.store.register_pv_user(100000 + i, username=f"user_{i:05d}")
+
+        messages = self._count_reply()
+
+        self.assertGreater(len(messages), 1, "لیست بلند باید به چند پیام شکسته شود")
+        for msg in messages:                                  # محدودیت طول پیام
+            self.assertLessEqual(len(msg), self.cfg.max_message_chars)
+
+        all_lines = "\n".join(messages).split("\n")
+        self.assertEqual(all_lines[0], "تعداد اعضا : 601")     # ۶۰۰ کاربر + مالک
+        self.assertEqual(all_lines[1], "")
+        # شماره‌گذاری ادامه‌دار و بدون تکرار/پرش
+        numbered = [line for line in all_lines if line and line[0].isdigit()]
+        self.assertEqual(numbered[0], "1 : @user_00000")
+        self.assertEqual(numbered[-1], "601 : مالک")
+        self.assertEqual([int(l.split(" : ")[0]) for l in numbered],
+                         list(range(1, 602)))
+
+    def test_44_list_command_is_still_unchanged(self):
+        self.make_owner()
+        run(self.pv("سلام", user_id=USER_2, username="osine"))
+        run(self.pv("سلام", user_id=USER_3, username=None, display_name="ali"))
+
+        self.client.requests.clear()
+        run(self.pv("لیست اعضا", user_id=OWNER_ID, display_name="مالک"))
+
+        # «لیست اعضا» همچنان فقط شماره‌گذاری‌شده است، بدون سرتیتر تعداد
+        self.assertEqual(
+            self.client.requests[0].message,
+            "1 : @osine\n2 : ali\n3 : مالک",
+        )
+
+    def test_45_count_and_list_agree_with_storage(self):
+        self.make_owner()
+        run(self.pv("سلام", user_id=USER_2, username="osine"))
+        run(self.pv("سلام", user_id=USER_3, username=None, display_name="ali"))
+
+        messages = self._count_reply()
+        header_count = int(messages[0].splitlines()[0].split(" : ")[1])
+
+        self.assertEqual(header_count, self.store.count_pv_users())
+        numbered_lines = [
+            l for l in messages[0].split("\n")[2:] if l and l[0].isdigit()
+        ]
+        self.assertEqual(len(numbered_lines), len(self.store.list_pv_users()))
