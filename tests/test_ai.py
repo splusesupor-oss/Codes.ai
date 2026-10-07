@@ -742,6 +742,11 @@ class TestSafety(AITestCase):
     def test_17f_ai_model_default_matches_requested_model(self):
         self.assertEqual(self.cfg.ai_model, "@cf/zai-org/glm-4.7-flash")
 
+    def test_17h_output_budget_has_reasoning_headroom(self):
+        """مدل استدلالی است؛ بودجه‌ی پیش‌فرض باید به‌اندازه‌ی کافی برای پاسخ هم جا داشته باشد."""
+        self.assertGreaterEqual(Config().ai_max_output_tokens, 1024)
+        self.assertGreaterEqual(Config.from_env().ai_max_output_tokens, 1024)
+
     def test_17g_system_prompt_is_sent_first(self):
         self.make_owner()
         self.store.ai_set_enabled(GROUP_A, True)
@@ -857,7 +862,7 @@ class TestRealClientIntegration(AITestCase):
             "https://api.cloudflare.com/client/v4/accounts/acct-123/ai/run/"
             "@cf/zai-org/glm-4.7-flash",
         )
-        self.assertEqual(session.calls[0]["body"]["max_tokens"], 128)
+        self.assertEqual(session.calls[0]["body"]["max_completion_tokens"], 128)
         self.assertEqual([r.message for r in self.client.requests], ["تهران آفتابی است."])
 
 
