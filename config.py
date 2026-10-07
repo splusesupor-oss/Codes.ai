@@ -90,7 +90,8 @@ AI_LISTX_COMMAND = "ai list x"      # حذف مجوز کاربرِ Reply‌شد�
 AI_MODEL = "@cf/zai-org/glm-4.7-flash"
 
 # سهمیه‌ی داخلی روزانه به تفکیک هر گروه (بر اساس روز UTC، هماهنگ با ریست Cloudflare)
-AI_DAILY_QUOTA = 30
+# هر گروه مستقل از بقیه، روزانه تا این تعداد درخواست به مدل می‌فرستد.
+AI_DAILY_QUOTA = 5000
 
 # محدودیت‌های مصرف برای هر درخواست
 AI_MAX_OUTPUT_TOKENS = 256          # سقف توکن خروجی مدل

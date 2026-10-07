@@ -317,6 +317,64 @@ class TestQuota(AITestCase):
         self.assertTrue(self.store.ai_is_enabled(GROUP_A))
 
 
+class TestDailyQuotaValue(AITestCase):
+    """سهمیه‌ی پیش‌فرض هر گروه: ۵۰۰۰ درخواست در روز (به‌تفکیک روز UTC و مستقل per-group)."""
+
+    def test_default_quota_is_5000_per_group(self):
+        self.assertEqual(Config().ai_daily_quota, 5000)
+        self.assertEqual(Config.from_env().ai_daily_quota, 5000)
+
+    def test_group_can_use_exactly_5000_requests_in_a_day(self):
+        day = utc_day()
+        granted = 0
+        while self.store.ai_consume_quota(GROUP_A, day, self.cfg.ai_daily_quota):
+            granted += 1
+            if granted > 6000:          # محافظ تست: از حلقه‌ی بی‌نهایت جلوگیری می‌کند
+                break
+
+        self.assertEqual(granted, 5000, "هر گروه باید روزانه دقیقاً ۵۰۰۰ درخواست مجاز داشته باشد")
+        self.assertEqual(self.store.ai_usage(GROUP_A, day), 5000)
+        # درخواست ۵۰۰۰اُم به بعد بسته است
+        self.assertFalse(self.store.ai_consume_quota(GROUP_A, day, self.cfg.ai_daily_quota))
+        self.assertEqual(self.store.ai_usage(GROUP_A, day), 5000)
+
+    def test_5000_quota_is_per_group_and_per_day(self):
+        day_a, day_b = utc_day(), "2026-10-09"
+        for _ in range(5000):
+            self.assertTrue(self.store.ai_consume_quota(GROUP_A, day_a, 5000))
+        self.assertFalse(self.store.ai_consume_quota(GROUP_A, day_a, 5000))   # روز A تمام است
+
+        self.assertTrue(self.store.ai_consume_quota(GROUP_A, day_b, 5000))    # روز بعد آزاد است
+        self.assertTrue(self.store.ai_consume_quota(GROUP_B, day_a, 5000))    # گروه دیگر مستقل است
+        self.assertEqual(self.store.ai_usage(GROUP_B, day_a), 1)
+
+    def test_whole_chat_flow_works_at_boundary_of_daily_quota(self):
+        """جریان واقعی چت: تا ۵۰۰۰ پاسخ می‌گیرد و بعد از آن پیام دقیق سهمیه."""
+        self.make_owner()
+        self.store.ai_set_enabled(GROUP_A, True)
+        self.store.ai_allow_user(GROUP_A, USER_1)
+
+        async def ask(text="سلام"):
+            event = FakeEvent(text, user_id=USER_1, chat_id=GROUP_A, is_group=True,
+                              reply_to=self.reply_from(USER_2))
+            await self.core.on_new_message(self.client, event)
+
+        # پر کردن سهمیه‌ی امروز با مصرف مستقیم (سریع‌تر از ۵۰۰۰ درخواست شبکه‌ای)
+        day = utc_day()
+        for _ in range(5000):
+            self.store.ai_consume_quota(GROUP_A, day, 5000)
+
+        run(ask())
+        self.assertEqual(self.ai_calls(), 0, "بعد از ۵۰۰۰ درخواست، دیگر به API نمی‌رود")
+        self.assertEqual(self.texts(), [brand.AI_QUOTA_TEXT])
+
+        # گروه دیگر همان روز همچنان کار می‌کند
+        self.store.ai_set_enabled(GROUP_B, True)
+        self.store.ai_allow_user(GROUP_B, USER_1)
+        run(self.send("سلام", user_id=USER_1, chat_id=GROUP_B, reply_to=self.reply_from(USER_2)))
+        self.assertEqual(self.ai_calls(), 1)
+
+
 class TestPerGroupIsolation(AITestCase):
     def test_12_permission_in_group_a_does_not_apply_to_group_b(self):
         self.make_owner()

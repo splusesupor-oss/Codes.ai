@@ -394,7 +394,7 @@ fallback معرفی را دارند (`blockquote+bold → bold-only → plain`).
 * کاربر غیرمجاز دقیقاً این متن را می‌گیرد و **هیچ درخواستی به Cloudflare نمی‌رود**:
   «شما مجاز به صحبت کردن با هوش مصنوعی ai fox acod نیستید مالک باید به شما اجازه صحبت بدهد»
 * پاسخ مدل در **همان گروه** و به‌صورت **Reply روی همان پیام کاربر** ارسال می‌شود.
-* **سهمیه‌ی داخلی روزانه به تفکیک هر گروه** (پیش‌فرض ۳۰ درخواست، `ACOD_AI_DAILY_QUOTA`)
+* **سهمیه‌ی داخلی روزانه به تفکیک هر گروه** (پیش‌فرض **۵۰۰۰** درخواست برای هر گروه، `ACOD_AI_DAILY_QUOTA`)
   بر اساس **روز UTC**؛ اگر سهمیه‌ی داخلی تمام شود یا خود Cloudflare خطای
   سهمیه/محدودیت (HTTP 429 / کدهای 4006 و 3036 — «daily free allocation of 10,000 neurons»)
   برگرداند، دقیقاً این متن ارسال و سهمیه‌ی آن روز بسته می‌شود:
@@ -506,7 +506,7 @@ python manage.py reset-owner --yes  # فقط برای تست
 خروجی واقعی اجرای تست‌ها در همین محیط:
 
 ```
-Ran 161 tests in 0.304s
+Ran 165 tests in 0.55s
 OK
 ```
 
@@ -532,6 +532,9 @@ OK
 | پیام بسیار بلند سهمیه را یک‌جا نسوزاند | `test_15_long_message_is_truncated_per_request` |
 | تاریخچه‌ی محدود | `test_15b_history_is_bounded` |
 | بعد از restart وضعیت per-group باقی بماند | `test_16_state_survives_restart` |
+| سهمیه‌ی پیش‌فرض هر گروه = ۵۰۰۰ درخواست در روز | `test_default_quota_is_5000_per_group` / `test_group_can_use_exactly_5000_requests_in_a_day` |
+| ۵۰۰۰ مستقل per-group و per-day (و بسته‌شدن درخواست ۵۰۰۱اُم) | `test_5000_quota_is_per_group_and_per_day` |
+| جریان واقعی چت در مرز سهمیه‌ی روزانه | `test_whole_chat_flow_works_at_boundary_of_daily_quota` |
 | سازگاری دیتابیس قدیمی (Phase 6) با جداول AI | `test_old_database_upgrades_cleanly_and_keeps_data` |
 | خودکار مجاز نشدن با username / دستورها فقط مالک | `test_17c_user_cannot_self_authorize_with_plain_text` / `test_17d_…` |
 | صحت endpoint/پارس پاسخ/تشخیص سهمیه‌ی Cloudflare | `tests/test_ai_client.py` (۱۲ تست، آفلاین) |
@@ -602,7 +605,7 @@ OK
 | `CLOUDFLARE_ACCOUNT_ID` | — | شناسه‌ی حساب Cloudflare (برای AI؛ داخل کد نیست، فقط `.env`) |
 | `CLOUDFLARE_API_TOKEN` | — | توکن Workers AI (برای AI؛ داخل کد نیست، فقط `.env`) |
 | `ACOD_AI_MODEL` | `@cf/zai-org/glm-4.7-flash` | مدل Workers AI |
-| `ACOD_AI_DAILY_QUOTA` | `30` | سهمیه‌ی داخلی روزانه‌ی هر گروه (روز UTC) |
+| `ACOD_AI_DAILY_QUOTA` | `5000` | سهمیه‌ی داخلی روزانه‌ی **هر گروه** (روز UTC، مستقل از گروه‌های دیگر) |
 | `ACOD_AI_MAX_OUTPUT_TOKENS` | `256` | سقف توکن خروجی هر پاسخ |
 | `ACOD_AI_MAX_INPUT_CHARS` | `800` | حداکثر طول متن ورودی هر پیام (مازاد بریده می‌شود) |
 | `ACOD_AI_HISTORY_PAIRS` | `2` | تعداد جفت گفت‌وگوی فرستاده‌شده به مدل (۰ = بدون تاریخچه) |
