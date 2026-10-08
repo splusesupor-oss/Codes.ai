@@ -49,6 +49,9 @@ class PvUsersTestCase(unittest.TestCase):
         self.store = OwnerStore(self.db)
         self.client = FakeClient()
         self.core = BotCore(self.cfg, self.store, BrandSender(self.cfg))
+        # طبق رفتار جدید تا قبل از «ai cod»، PV بی‌صدا است. اکثر تست‌های این
+        # فایل رفتار «بعد از فعال‌سازی» را می‌سنجند، پس یک مالک پیش‌فرض می‌گذاریم.
+        self.make_owner()
 
     def tearDown(self) -> None:
         self.store.close()
@@ -132,7 +135,8 @@ class TestRegistration(PvUsersTestCase):
         run(self.pv("سلام", user_id=USER_2, username="osine"))
 
         self.assertEqual(self.store.count_pv_users(), 1)
-        self.assertIsNone(self.store.get_owner(), "کاربر PV نباید مالک شود")
+        # مالک از قبل در setUp ثبت شده (OWNER_ID)؛ کاربر PV نباید جایگزینش شود
+        self.assertEqual(self.store.get_owner().user_id, OWNER_ID)
         self.assertFalse(self.store.is_owner(USER_2), "کاربر PV نباید مالک محسوب شود")
 
 

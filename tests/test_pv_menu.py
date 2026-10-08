@@ -42,6 +42,10 @@ class PvMenuTestCase(unittest.TestCase):
         self.store = OwnerStore(self.db)
         self.client = FakeClient()
         self.core = BotCore(self.cfg, self.store, BrandSender(self.cfg))
+        # طبق رفتار جدید، تا قبل از «ai cod» هیچ پاسخ خودکاری فرستاده نمی‌شود؛
+        # اکثر تست‌های این فایل رفتار «بعد از فعال‌سازی» را می‌سنجند، پس یک مالک
+        # پیش‌فرض ثبت می‌کنیم.
+        self.store.claim(OWNER_ID, chat_id=GROUP_A, message_id=1, display_name="مالک")
 
     def tearDown(self) -> None:
         self.store.close()
@@ -277,11 +281,28 @@ class TestPvMenuGuards(PvMenuTestCase):
         self.assertEqual(self.client.requests, [])
         self.assertEqual(self.store.count_pv_users(), 0)
 
-    def test_20_ai_cod_in_pv_does_not_register_owner(self):
+    def test_20_ai_cod_in_pv_does_not_change_owner(self):
         run(self.pv("ai cod", user_id=USER_A))
-        self.assertIsNone(self.store.get_owner())
+        # «ai cod» در PV نباید مالک قبلی (OWNER_ID از setUp) را تغییر دهد
+        self.assertEqual(self.store.get_owner().user_id, OWNER_ID)
         # پیام اول بود → معرفی + منو (و «ai cod» گزینه‌ی منو نیست)
         self.assertEqual(self.texts(), [brand.FULL_TEXT, brand.MENU_TEXT])
+
+    def test_20b_pv_is_silent_before_owner_claim(self):
+        # قبل از فعال‌سازی، PV کاملاً بی‌صدا است (ثبت می‌کند ولی پیام نمی‌فرستد)
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            db_path = Path(tmp.name) / "o.sqlite3"
+            store2 = OwnerStore(db_path)
+            client2 = FakeClient()
+            core2 = BotCore(self.cfg, store2, BrandSender(self.cfg))
+            run(core2.on_new_message(client2, FakeEvent(
+                "سلام", user_id=USER_A, chat_id=USER_A, is_group=False)))
+            self.assertIsNone(store2.get_owner())
+            self.assertEqual(client2.requests, [])
+            self.assertEqual(store2.count_pv_users(), 1)
+        finally:
+            store2.close(); tmp.cleanup()
 
     def test_21_anti_loop_outgoing_is_ignored(self):
         run(self.pv(brand.MENU_TEXT, user_id=USER_A, out=True))
@@ -290,7 +311,7 @@ class TestPvMenuGuards(PvMenuTestCase):
         self.assertEqual(self.store.count_pv_users(), 0)
 
     def test_22_owner_admin_commands_still_work(self):
-        self.store.claim(OWNER_ID, chat_id=GROUP_A, display_name="مالک")
+        # مالک از قبل در setUp ثبت شده است
         run(self.pv("سلام", user_id=USER_B, username="osine"))
         self.client.clear_requests()
 

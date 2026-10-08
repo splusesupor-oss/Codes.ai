@@ -32,6 +32,12 @@ CREATE TABLE IF NOT EXISTS global_owner (
     claimed_at         TEXT    NOT NULL
 );
 
+-- تنظیمات سراسری ربات (کلید-مقدار) — برای نگهداری وضعیت «خاموشی کلی» و موارد مشابه
+CREATE TABLE IF NOT EXISTS bot_settings (
+    key    TEXT PRIMARY KEY,
+    value  TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS owner_attempts (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     at          TEXT NOT NULL,
@@ -155,6 +161,43 @@ class OwnerStore:
     def is_owner(self, user_id: int) -> bool:
         owner = self.get_owner()
         return owner is not None and int(owner.user_id) == int(user_id)
+
+    def has_owner(self) -> bool:
+        """آیا هنوز هیچ مالک سراسری با «ai cod» ثبت نشده است؟"""
+        return self.get_owner() is not None
+
+    # ------------------------------------------------- خاموشی کلی ربات
+    _KEY_SUSPENDED = "global_suspended"
+
+    def is_global_suspended(self) -> bool:
+        """وضعیت «خاموشی کلی» ربات.
+
+        مقدار پیش‌فرض False است (ربات روشن)؛ فقط وقتی True است که مالک
+        با «ai cod» پس از claim، ربات را خاموش کرده باشد. این وضعیت در
+        SQLite دائمی می‌شود و بعد از restart هم باقی می‌ماند.
+        """
+        if not self.has_owner():
+            return True    # قبل از claim همیشه خاموش
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT value FROM bot_settings WHERE key = ?",
+                (self._KEY_SUSPENDED,),
+            ).fetchone()
+        return bool(row) and (row["value"] == "1")
+
+    def set_global_suspended(self, suspended: bool) -> None:
+        """ذخیره‌ی دائمی وضعیت خاموشی/روشنی کلی."""
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO bot_settings(key, value) VALUES(?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (self._KEY_SUSPENDED, "1" if suspended else "0"),
+            )
+            self._conn.commit()
+
+    def is_active(self) -> bool:
+        """آیا ربات در حالت «فعال» است (مالک ثبت شده و خاموش نشده)؟"""
+        return self.has_owner() and not self.is_global_suspended()
 
     def claim(
         self,

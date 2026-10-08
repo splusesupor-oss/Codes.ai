@@ -192,6 +192,23 @@ class BotCore:
         if not text.strip():
             return
 
+        # (قفلِ سراسری) دو حالت ربات را «قفل» می‌کند:
+        #   ۱) هنوز هیچ‌کس با «ai cod» مالک نشده است (پیش‌فرض خاموش)؛
+        #   ۲) مالک با «ai cod» دوباره ربات را خاموش کرده (global_suspended=True).
+        # در هر دو حالت فقط خود دستور «ai cod» عبور می‌کند تا مالک بتواند:
+        #   - اولین‌بار claim کند (حالت ۱)، یا
+        #   - دوباره ربات را روشن کند (حالت ۲).
+        # همه‌ی پیام‌های دیگر بی‌درنگ نادیده گرفته می‌شوند و هیچ پاسخی فرستاده
+        # نمی‌شود (ربات کاملاً بی‌صدا است).
+        if not self.store.is_active():
+            command = match_command(text, self.cfg)
+            if command == "owner":
+                await self._handle_owner_command(client, event)
+            else:
+                log.debug("ربات خاموش است؛ پیام گروهی «%s» نادیده گرفته شد.",
+                          text[:40])
+            return
+
         # (۲-الف) دستورهای AI گروه: ai online / ai of / ai list / ai list x
         #         (فقط گروه و فقط مالک سراسری — منطق و بررسی مالک در GroupAI)
         ai_command = match_ai_command(text, self.cfg)
@@ -222,10 +239,11 @@ class BotCore:
         """مسیر پیام خصوصی:
 
         ۱) ثبت یک‌بارِ کاربر PV در storage دائمی (کلید = user_id واقعی)
-        ۲) دستورهای مدیریتی مالک سراسری («تعداد اعضا» / «لیست اعضا») — مثل قبل
-        ۳) «اولین پیام» همان کاربر → معرفی (یک‌بار) + منوی انتخاب (یک‌بار)
-        ۴) پیام‌های بعدی: اگر یکی از ۶ گزینه‌ی منو بود → فقط پاسخ همان گزینه
-        ۵) متن دیگر → پاسخ جدیدی ساخته نمی‌شود و معرفی/منو هم تکرار نمی‌شود
+        ۲) «ai cod» از مالک در PV هم ربات را خاموش/روشن می‌کند (اما هرگز claim نمی‌کند)
+        ۳) دستورهای مدیریتی مالک سراسری («تعداد اعضا» / «لیست اعضا») — فقط وقتی روشن
+        ۴) «اولین پیام» همان کاربر → معرفی (یک‌بار) + منوی انتخاب (یک‌بار)
+        ۵) پیام‌های بعدی: اگر یکی از ۶ گزینه‌ی منو بود → فقط پاسخ همان گزینه
+        ۶) متن دیگر → پاسخ جدیدی ساخته نمی‌شود و معرفی/منو هم تکرار نمی‌شوند
         """
         sender_id = int(getattr(event, "sender_id", 0) or 0)
         text = getattr(event, "raw_text", None) or ""
@@ -244,8 +262,25 @@ class BotCore:
                 log.info("کاربر جدید PV ثبت شد: user_id=%s (تعداد: %s)",
                          sender_id, self.store.count_pv_users())
 
-        # (۲) دستورهای مدیریتی — فقط مالک سراسری و فقط در PV (بدون تغییر)
+        # (۲) «ai cod» از مالک در PV — تاگل خاموش/روشن (ولی هرگز claim نمی‌کند)
+        if self.store.has_owner() and self.store.is_owner(sender_id) \
+                and match_command(text, self.cfg) == "owner":
+            new_state = not self.store.is_global_suspended()
+            self.store.set_global_suspended(new_state)
+            text_resp = brand.BOT_OFF_TEXT if new_state else brand.BOT_ON_TEXT
+            log.info("وضعیت ربات از PV تغییر کرد: suspended=%s (مالک %s)",
+                     new_state, sender_id)
+            self._log_report(await self.sender.send_text(
+                client, await self._peer_of(event), text_resp
+            ))
+            return
+
+        # (۳) دستورهای مدیریتی — فقط مالک سراسری و فقط وقتی ربات روشن
         if sender_id and self.store.is_owner(sender_id):
+            if not self.store.is_active():
+                log.debug("ربات خاموش است؛ دستور مدیریتی PV از %s نادیده گرفته شد.",
+                          sender_id)
+                return
             command = match_pv_admin_command(text, self.cfg)
             if command == "count":
                 await self._send_pv_count(client, event)
@@ -255,6 +290,13 @@ class BotCore:
                 return
 
         if not self.cfg.private_auto_reply:
+            return
+
+        # در حالت قفل (قبل از claim یا خاموشی کلی)، PV هیچ پیام خودکاری
+        # (معرفی/منو/گزینه‌ها) نمی‌فرستد؛ فقط ثبت کاربر انجام می‌شود تا بعداً
+        # که مالک ربات را روشن کرد آمار کاربران PV در دسترس باشد.
+        if not self.store.is_active():
+            log.debug("ربات خاموش است؛ پیام PV از %s نادیده گرفته شد.", sender_id)
             return
 
         # (۳) اولین پیام این کاربر → معرفی + منو (هرکدام فقط یک‌بار)
@@ -356,16 +398,23 @@ class BotCore:
         )
 
         if result.claimed:
+            # اولین «ai cod» → مالک می‌شود و ربات روشن می‌ماند (پیام خوش‌آمد/برند)
+            self.store.set_global_suspended(False)
             log.info("🏆 مالک سراسری ثبت شد: user_id=%s (chat_id=%s)", user_id, chat_id)
             report = await self._send_brand(client, event)
             self._log_report(report)
             return
 
         if result.reason == "already_same_owner":
-            # مالک قبلی دوباره «ai cod» زده است → مالک جدیدی ساخته نمی‌شود.
-            log.info("مالک سراسری (%s) دوباره «ai cod» زد؛ مالک جدید ساخته نشد.", user_id)
-            if self.cfg.announce_on_owner_repeat:
-                self._log_report(await self._send_brand(client, event))
+            # مالک دوباره «ai cod» زده است → تاگل خاموش/روشن
+            new_state = not self.store.is_global_suspended()
+            self.store.set_global_suspended(new_state)
+            text = brand.BOT_OFF_TEXT if new_state else brand.BOT_ON_TEXT
+            log.info("وضعیت ربات تغییر کرد: suspended=%s (توسط مالک %s)",
+                     new_state, user_id)
+            self._log_report(await self.sender.send_text(
+                client, await self._peer_of(event), text
+            ))
             return
 
         # کاربر دیگری «ai cod» زده است → کاملاً نادیده گرفته می‌شود.
