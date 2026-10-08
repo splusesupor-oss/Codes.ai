@@ -57,7 +57,7 @@ class PvMenuTestCase(unittest.TestCase):
         await self.core.on_new_message(self.client, event)
 
     def texts(self):
-        return [r.message for r in self.client.requests]
+        return self.client.text_messages()
 
     def last_request(self):
         return self.client.requests[-1]
@@ -86,7 +86,7 @@ class TestFirstMessage(PvMenuTestCase):
 
     def test_2_second_message_does_not_resend_intro_or_menu(self):
         run(self.pv("سلام", user_id=USER_A))
-        self.client.requests.clear()
+        self.client.clear_requests()
 
         run(self.pv("ممنون", user_id=USER_A))          # متن غیردستوری
         self.assertEqual(self.client.requests, [], "معرفی/منو نباید تکرار شود")
@@ -118,7 +118,7 @@ class TestFirstMessage(PvMenuTestCase):
 
     def test_4_username_change_keeps_user_same(self):
         run(self.pv("سلام", user_id=USER_A, username="osine"))
-        self.client.requests.clear()
+        self.client.clear_requests()
 
         # همان user_id، username متفاوت → کاربر جدید نیست
         run(self.pv("سلام", user_id=USER_A, username="osine2_new"))
@@ -128,7 +128,7 @@ class TestFirstMessage(PvMenuTestCase):
     def test_5_second_user_gets_own_intro_and_menu_once(self):
         run(self.pv("سلام", user_id=USER_A, username="osine"))
         run(self.pv("سلام", user_id=USER_B, username="elism", display_name="الیس"))
-        self.client.requests.clear()
+        self.client.clear_requests()
 
         run(self.pv("سلام", user_id=USER_B))            # پیام دوم کاربر دوم
         self.assertEqual(self.client.requests, [])
@@ -148,7 +148,7 @@ class TestFirstMessage(PvMenuTestCase):
                 await core2.on_new_message(client2, event)
 
             run(scenario())
-            self.assertEqual([r.message for r in client2.requests],
+            self.assertEqual(client2.text_messages(),
                              [brand.FULL_TEXT, brand.MENU_TEXT])
         finally:
             store2.close()
@@ -160,7 +160,7 @@ class TestMenuReplies(PvMenuTestCase):
 
     def _ask(self, option, *, user_id=USER_A):
         run(self.pv("سلام", user_id=user_id))        # اولین پیام: معرفی + منو
-        self.client.requests.clear()
+        self.client.clear_requests()
         run(self.pv(option, user_id=user_id))
         self.assertEqual(len(self.client.requests), 1, "باید فقط یک پاسخ برود")
         return self.last_request()
@@ -272,7 +272,7 @@ class TestPvMenuGuards(PvMenuTestCase):
         run(self.group("کدرز", user_id=USER_A))
         self.assertEqual(self.texts(), [brand.FULL_TEXT])   # فقط معرفی، بدون منو
 
-        self.client.requests.clear()
+        self.client.clear_requests()
         run(self.group("سلام به همه", user_id=USER_A))
         self.assertEqual(self.client.requests, [])
         self.assertEqual(self.store.count_pv_users(), 0)
@@ -292,18 +292,18 @@ class TestPvMenuGuards(PvMenuTestCase):
     def test_22_owner_admin_commands_still_work(self):
         self.store.claim(OWNER_ID, chat_id=GROUP_A, display_name="مالک")
         run(self.pv("سلام", user_id=USER_B, username="osine"))
-        self.client.requests.clear()
+        self.client.clear_requests()
 
         run(self.pv("تعداد اعضا", user_id=OWNER_ID, display_name="مالک"))
         self.assertTrue(self.last_request().message.startswith("تعداد اعضا :"))
 
-        self.client.requests.clear()
+        self.client.clear_requests()
         run(self.pv("لیست اعضا", user_id=OWNER_ID))
         self.assertIn("1 : @osine", self.last_request().message)
 
     def test_23_menu_reply_goes_only_to_same_user(self):
         run(self.pv("سلام", user_id=USER_A))
-        self.client.requests.clear()
+        self.client.clear_requests()
         run(self.pv("سازنده", user_id=USER_A))
 
         req = self.last_request()

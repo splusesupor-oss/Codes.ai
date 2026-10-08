@@ -11,17 +11,36 @@ from __future__ import annotations
 
 from typing import Optional
 
-from splusthon import types
+from splusthon import functions, types
+from splusthon.tl.functions.messages import SetTypingRequest  # noqa: E402
 
 
 class FakeClient:
     """کلاینت جعلی: درخواست‌های واقعی MTProto را فقط ثبت می‌کند."""
 
-    def __init__(self, *, reject_blockquote: bool = False, reject_all: bool = False):
-        self.requests: list = []
+    def __init__(self, *, reject_blockquote: bool = False, reject_all: bool = False,
+                 _request_side_effect=None):
+        # همهٔ درخواست‌ها (از جمله SetTypingRequest) در این لیست ذخیره می‌شوند.
+        self.all_requests: list = []
         self.reject_blockquote = reject_blockquote
         self.reject_all = reject_all
         self._next_id = 100
+        self._side_effect = _request_side_effect  # برای کنترل دقیق‌تر در تست (callable(req) -> raise/None)
+        # برای سازگاری با تست‌های قبلی: self.requests فقط درخواست‌هایی را نشان
+        # می‌دهد که پیام هستند (نه SetTypingRequest)، تا متدهای prev نظیر
+        # texts() و self.client.requests[-1].message در تست‌های موجود از کار نیفتند.
+        self._expose_messages_only = True
+
+    @property
+    def requests(self):
+        if not self._expose_messages_only:
+            return self.all_requests
+        return [r for r in self.all_requests if not isinstance(r, SetTypingRequest)]
+
+    @requests.setter
+    def requests(self, value):
+        # برای سازگاری با کدهای قبلی که self.requests را مستقیماً مقداردهی می‌کنند
+        self.all_requests = list(value) if value is not None else []
 
     async def get_input_entity(self, chat):
         # مثل خود SPlusthon: شناسه‌ی مثبت = کاربر (PV)، منفی = گروه
@@ -31,6 +50,12 @@ class FakeClient:
         return types.InputPeerChat(chat_id=abs(chat_id))
 
     async def __call__(self, request, ordered=False):
+        if self._side_effect is not None:
+            res = self._side_effect(request)
+            if isinstance(res, Exception):
+                raise res
+            if res is not None:
+                return res
         if self.reject_all:
             raise RuntimeError("RPCError: InternalServerError (fake)")
         entities = getattr(request, "entities", None) or []
@@ -38,7 +63,7 @@ class FakeClient:
             isinstance(e, types.MessageEntityBlockquote) for e in entities
         ):
             raise RuntimeError("RPCError: 400 ENTITIES_INVALID (fake)")
-        self.requests.append(request)
+        self.all_requests.append(request)
         self._next_id += 1
         msg = types.Message(
             id=self._next_id,
@@ -56,11 +81,14 @@ class FakeClient:
 
     # ------------------------------------------------------------ ابزار تحلیل
     def last_request(self):
-        return self.requests[-1] if self.requests else None
+        reqs = self.requests
+        return reqs[-1] if reqs else None
 
     def sent_messages(self) -> list[dict]:
         out = []
         for req in self.requests:
+            if not hasattr(req, "message") or isinstance(req, SetTypingRequest):
+                continue
             out.append(
                 {
                     "message": req.message,
@@ -70,6 +98,37 @@ class FakeClient:
                 }
             )
         return out
+
+    def text_messages(self) -> list[str]:
+        """فقط متن SendMessageRequest ها (برای تست‌هایی که نباید Typing را ببینند)."""
+        return [
+            r.message
+            for r in self.requests
+            if hasattr(r, "message") and not isinstance(r, SetTypingRequest)
+        ]
+
+    # ----------------------------------------------------- typing inspection
+    def typing_requests(self):
+        """فهرست SetTypingRequest هایی که تا کنون فرستاده شده‌اند."""
+        return [r for r in self.all_requests if isinstance(r, SetTypingRequest)]
+
+    def clear_requests(self):
+        self.all_requests.clear()
+
+    def typing_peer_ids(self):
+        ids = []
+        for r in self.typing_requests():
+            p = r.peer
+            pid = getattr(p, "chat_id", None) or getattr(p, "user_id", None) or getattr(p, "channel_id", None)
+            ids.append(pid)
+        return ids
+
+    def typing_actions(self):
+        return [type(r.action).__name__ for r in self.typing_requests()]
+
+    def last_typing_action(self):
+        acts = self.typing_actions()
+        return acts[-1] if acts else None
 
 
 class FakeSender:

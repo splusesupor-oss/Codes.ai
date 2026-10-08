@@ -75,7 +75,7 @@ class PvUsersTestCase(unittest.TestCase):
         self.store.claim(user_id, chat_id=GROUP_A, message_id=1, display_name="مالک")
 
     def sent_texts(self):
-        return [r.message for r in self.client.requests]
+        return self.client.text_messages()
 
 
 class TestRegistration(PvUsersTestCase):
@@ -178,7 +178,7 @@ class TestOwnerCommands(PvUsersTestCase):
         run(self.pv("سلام", user_id=USER_3, username=None, display_name="ali"))
         run(self.pv("سلام", user_id=444, username="elism"))
 
-        self.client.requests.clear()
+        self.client.clear_requests()
         run(self.pv("تعداد اعضا", user_id=OWNER_ID, display_name="مالک"))
 
         self.assertEqual(len(self.client.requests), 1)
@@ -198,7 +198,7 @@ class TestOwnerCommands(PvUsersTestCase):
         run(self.pv("سلام", user_id=USER_3, username=None, display_name="ali"))
         run(self.pv("سلام", user_id=444, username="elism"))
 
-        self.client.requests.clear()
+        self.client.clear_requests()
         run(self.pv("لیست اعضا", user_id=OWNER_ID, display_name="مالک"))
 
         self.assertEqual(len(self.client.requests), 1)
@@ -213,7 +213,7 @@ class TestOwnerCommands(PvUsersTestCase):
         self.make_owner()
         run(self.pv("سلام", user_id=USER_2, username="osine"))   # اولین پیام → ثبت
         run(self.pv("سلام", user_id=USER_3))                     # اولین پیام → ثبت
-        self.client.requests.clear()
+        self.client.clear_requests()
 
         # «لیست اعضا» و «تعداد اعضا» نه گزینه‌ی منو هستند و نه برای غیرمالک اجرا می‌شوند
         run(self.pv("لیست اعضا", user_id=USER_2))
@@ -226,7 +226,7 @@ class TestOwnerCommands(PvUsersTestCase):
     def test_26_admin_commands_are_ignored_in_groups(self):
         self.make_owner()
         run(self.pv("سلام", user_id=USER_2, username="osine"))
-        self.client.requests.clear()
+        self.client.clear_requests()
 
         run(self.group("لیست اعضا", user_id=OWNER_ID))
         run(self.group("تعداد اعضا", user_id=OWNER_ID))
@@ -286,7 +286,7 @@ class TestLongListChunking(PvUsersTestCase):
         for i in range(600):
             self.store.register_pv_user(100000 + i, username=f"user_{i:05d}")
 
-        self.client.requests.clear()
+        self.client.clear_requests()
         run(self.pv("لیست اعضا", user_id=OWNER_ID))
 
         self.assertGreater(len(self.client.requests), 1)
@@ -344,9 +344,9 @@ class TestCountWithList(PvUsersTestCase):
     """دستور «تعداد اعضا»: تعداد + فهرست کامل کاربران PV (اصلاح جدید)."""
 
     def _count_reply(self, *, owner_id=OWNER_ID):
-        self.client.requests.clear()
+        self.client.clear_requests()
         run(self.pv("تعداد اعضا", user_id=owner_id, display_name="مالک"))
-        return [r.message for r in self.client.requests]
+        return self.client.text_messages()
 
     def test_36_format_is_exactly_count_blank_line_then_numbered_list(self):
         self.make_owner()
@@ -413,7 +413,7 @@ class TestCountWithList(PvUsersTestCase):
         self.make_owner()
         run(self.pv("سلام", user_id=USER_2, username="osine"))      # اولین پیام → ثبت
         run(self.pv("سلام", user_id=USER_3, username="elism"))
-        self.client.requests.clear()
+        self.client.clear_requests()
 
         run(self.pv("تعداد اعضا", user_id=USER_2))
         run(self.pv("تعداد اعضا", user_id=USER_3))
@@ -431,7 +431,7 @@ class TestCountWithList(PvUsersTestCase):
             await self.core._send_pv_count(self.client, event)
 
         run(scenario())
-        self.assertEqual([r.message for r in self.client.requests], ["تعداد اعضا : 0"])
+        self.assertEqual(self.client.text_messages(), ["تعداد اعضا : 0"])
 
     def test_43_long_list_is_split_with_continuous_numbering(self):
         self.make_owner()
@@ -459,7 +459,7 @@ class TestCountWithList(PvUsersTestCase):
         run(self.pv("سلام", user_id=USER_2, username="osine"))
         run(self.pv("سلام", user_id=USER_3, username=None, display_name="ali"))
 
-        self.client.requests.clear()
+        self.client.clear_requests()
         run(self.pv("لیست اعضا", user_id=OWNER_ID, display_name="مالک"))
 
         # «لیست اعضا» همچنان فقط شماره‌گذاری‌شده است، بدون سرتیتر تعداد

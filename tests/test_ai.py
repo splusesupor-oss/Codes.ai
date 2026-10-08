@@ -32,13 +32,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import brand  # noqa: E402
-from ai_client import AIConfigError, AIQuotaExceeded  # noqa: E402
+from ai_client import AIConfigError, AIError, AIQuotaExceeded  # noqa: E402
 from ai_service import GroupAI, utc_day  # noqa: E402
 from config import Config  # noqa: E402
 from core import BotCore  # noqa: E402
 from sender import BrandSender  # noqa: E402
 from storage import OwnerStore  # noqa: E402
-from splusthon import types  # noqa: E402
+from splusthon import functions, types  # noqa: E402
 from tests.fakes import FakeAI, FakeClient, FakeEvent, FakeReplyMessage  # noqa: E402
 
 GROUP_A, GROUP_B = -1001, -2002
@@ -89,7 +89,7 @@ class AITestCase(unittest.TestCase):
         await self.send(text, user_id=user_id, chat_id=user_id, is_group=False, **kw)
 
     def texts(self):
-        return [r.message for r in self.client.requests]
+        return self.client.text_messages()
 
     def ai_calls(self):
         return len(self.ai_client.calls)
@@ -119,7 +119,7 @@ class TestToggle(AITestCase):
     def test_3_owner_disables_ai(self):
         self.make_owner()
         run(self.send("ai online", user_id=OWNER))
-        self.client.requests.clear()
+        self.client.clear_requests()
 
         run(self.send("ai of", user_id=OWNER))
         self.assertFalse(self.store.ai_is_enabled(GROUP_A))
@@ -170,7 +170,7 @@ class TestPermissions(AITestCase):
         self.make_owner()
         run(self.send("ai list", user_id=OWNER, reply_to=self.reply_from(USER_1, username="osine")))
         self.assertTrue(self.store.ai_is_allowed(GROUP_A, USER_1))
-        self.client.requests.clear()
+        self.client.clear_requests()
 
         run(self.send("ai list x", user_id=OWNER,
                       reply_to=self.reply_from(USER_1, username="osine")))
@@ -247,6 +247,140 @@ class TestChat(AITestCase):
         self.assertEqual(self.client.requests, [])
 
 
+class TestTypingIndicator(AITestCase):
+    """تست‌های وضعیت «در حال نوشتن…» برای مسیر AI.
+
+    این تست‌ها FakeClient استفاده می‌کنند؛ هیچ تماس شبکه‌ای انجام نمی‌شود.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.make_owner()
+        self.store.ai_set_enabled(GROUP_A, True)
+        self.store.ai_allow_user(GROUP_A, USER_1, username="user1")
+
+    async def _ask(self, text="سلام", *, client=None, user_id=USER_1, chat_id=GROUP_A):
+        c = client or self.client
+        event = FakeEvent(text, user_id=user_id, chat_id=chat_id, is_group=True,
+                          reply_to=FakeReplyMessage(sender_id=user_id, msg_id=99))
+        # از core.on_new_message رد نمی‌کنیم تا admin/kodrez paths تداخل نداشته باشد
+        await self.ai.handle_chat(c, event)
+
+    def test_16_typing_starts_before_ai_request_and_stops_after_reply(self):
+        """قبل از درخواست AI باید TypingAction، و در پایان CancelAction ارسال شده باشد."""
+
+        class SlowFakeAI:
+            configured = True
+
+            async def chat(self_inner, messages, *, max_tokens=None):
+                await asyncio.sleep(0)  # yield به event loop تا _run typing یک دور بزند
+                from ai_client import AIResponse
+                return AIResponse(text="پاسخ")
+
+            async def close(self_inner):
+                pass
+
+        core = BotCore(self.cfg, self.store, self.sender, ai=GroupAI(
+            self.cfg, self.store, self.sender, SlowFakeAI()))
+
+        client = FakeClient()
+        run(core.on_new_message(client, FakeEvent(
+            "سلام", user_id=USER_1, chat_id=GROUP_A, is_group=True,
+            reply_to=FakeReplyMessage(sender_id=USER_1, msg_id=7))))
+
+        actions = client.typing_actions()
+        self.assertTrue(actions, "باید حداقل یک TypingAction ارسال شده باشد")
+        self.assertIn("SendMessageTypingAction", actions,
+                       "باید TypingAction قبل/حین درخواست ارسال شده باشد")
+        self.assertEqual(actions[-1], "SendMessageCancelAction",
+                         "پس از پایان باید typing با CancelAction متوقف شود")
+        # typing فقط برای همان گروه (GROUP_A = -1001 → InputPeerChat chat_id=1001)
+        peers = client.typing_peer_ids()
+        self.assertTrue(peers, "باید peer مشخص شده باشد")
+        self.assertTrue(all(pid == 1001 for pid in peers),
+                        "typing فقط باید در همان چت ارسال شود (نه چت‌های دیگر)")
+
+    def test_16b_typing_stops_on_ai_error(self):
+        """اگر Cloudflare خطا بدهد، typing نباید باقی بماند."""
+        from ai_client import AIError
+
+        class ErrorFakeAI:
+            configured = True
+            async def chat(self_inner, messages, *, max_tokens=None):
+                await asyncio.sleep(0)
+                raise AIError("شکست ساختگی تست")
+
+            async def close(self_inner):
+                pass
+
+        ai_service = GroupAI(self.cfg, self.store, self.sender, ErrorFakeAI())
+        core = BotCore(self.cfg, self.store, self.sender, ai=ai_service)
+
+        run(core.on_new_message(self.client, FakeEvent(
+            "سلام", user_id=USER_1, chat_id=GROUP_A, is_group=True,
+            reply_to=FakeReplyMessage(sender_id=USER_1, msg_id=7))))
+
+        self.assertEqual(self.client.typing_actions()[-1], "SendMessageCancelAction",
+                         "حتی در صورت خطا باید typing با CancelAction خاتمه یابد")
+
+    def test_16c_typing_stops_on_quota_error(self):
+        """در صورت اتمام سهمیه Cloudflare هم typing باید متوقف شود."""
+        from ai_client import AIQuotaExceeded
+
+        class QuotaFakeAI:
+            configured = True
+            async def chat(self_inner, messages, *, max_tokens=None):
+                await asyncio.sleep(0)
+                raise AIQuotaExceeded("quota fake")
+
+        ai_service = GroupAI(self.cfg, self.store, self.sender, QuotaFakeAI())
+        core = BotCore(self.cfg, self.store, self.sender, ai=ai_service)
+
+        run(core.on_new_message(self.client, FakeEvent(
+            "سلام", user_id=USER_1, chat_id=GROUP_A, is_group=True,
+            reply_to=FakeReplyMessage(sender_id=USER_1, msg_id=7))))
+
+        self.assertEqual(self.client.typing_actions()[-1], "SendMessageCancelAction")
+
+    def test_16d_non_ai_commands_do_not_send_typing(self):
+        """دستورهای «ai online» / «ai of» / «ai list» / «کدرز» / مالک نباید typing بفرستند."""
+        run(self.send("ai online", user_id=OWNER))
+        run(self.send("کدرز", user_id=OWNER))
+        # اطمینان: در این مسیرها هیچ SetTypingRequest ای ارسال نشده
+        self.assertEqual(self.client.typing_requests(), [],
+                         "دستورهای غیر-AI نباید وضعیت typing را فعال کنند")
+
+    def test_16e_typing_persists_across_retry_and_ends_with_cancel(self):
+        """اگر کل عملیات AI کمی طول بکشد، typing فعال می‌ماند و در پایان با
+        CancelAction خاتمه می‌پذیرد. (بازه‌ی refresh هر ۴.۵ ثانیه است؛ در تست
+        ۰.۱ ثانیه sleep حداقل یک TypingAction و در پایان CancelAction کافی است.)
+        """
+        class LongAI:
+            configured = True
+
+            async def chat(self_inner, messages, *, max_tokens=None):
+                await asyncio.sleep(0.05)
+                from ai_client import AIResponse
+                return AIResponse(text="پاسخ طولانی")
+
+            async def close(self_inner):
+                pass
+
+        ai_service = GroupAI(self.cfg, self.store, self.sender, LongAI())
+        core = BotCore(self.cfg, self.store, self.sender, ai=ai_service)
+
+        client = FakeClient()
+        run(core.on_new_message(client, FakeEvent(
+            "یک سوال طولانی", user_id=USER_1, chat_id=GROUP_A, is_group=True,
+            reply_to=FakeReplyMessage(sender_id=USER_1, msg_id=7))))
+
+        actions = client.typing_actions()
+        self.assertIn("SendMessageTypingAction", actions,
+                      "باید حداقل یک TypingAction در طول عملیات ارسال شده باشد")
+        self.assertEqual(actions[-1], "SendMessageCancelAction",
+                         "پس از پایان پاسخ باید typing با CancelAction خاتمه یابد")
+
+
 class TestQuota(AITestCase):
     def setUp(self):
         super().setUp()
@@ -269,7 +403,7 @@ class TestQuota(AITestCase):
         run(ask("یک"))
         run(ask("دو"))
         self.assertEqual(self.ai_calls(), 2)
-        self.client.requests.clear()
+        self.client.clear_requests()
 
         run(ask("سه"))          # سهمیه تمام شده
         self.assertEqual(self.ai_calls(), 2, "بعد از پایان سهمیه نباید درخواست برود")
@@ -287,7 +421,7 @@ class TestQuota(AITestCase):
         self.assertEqual(self.texts(), [brand.AI_QUOTA_TEXT])
         self.assertEqual(self.store.ai_usage(GROUP_A, utc_day()), self.cfg.ai_daily_quota)
 
-        self.client.requests.clear()
+        self.client.clear_requests()
         run(self.send("سلام دوباره", user_id=USER_1, reply_to=self.reply_from(USER_2)))
         self.assertEqual(self.texts(), [brand.AI_QUOTA_TEXT])   # دیگر درخواست نمی‌رود
         self.assertEqual(self.ai_calls(), 1)
@@ -415,7 +549,7 @@ class TestExactSystemTemplates(AITestCase):
         run(self.send("ai list", user_id=OWNER,
                       reply_to=self.reply_from(USER_1, username="ali")))
         expected = self.EXACT_ALLOWED.format(user="@ali")
-        self.assertEqual([r.message for r in self.client.requests], [expected])
+        self.assertEqual(self.client.text_messages(), [expected])
         self.assertEqual(self.client.requests[-1].message,
                          "☰ 𝗔𝗜 𝗨𝗭𝗘𝗥 : 「 @ali 」\n๏ 𝗳𝗼𝘅 𝗮𝗶 𝗰𝗼𝗱𝗲 🍂")
         self.assertTrue(self.store.ai_is_allowed(GROUP_A, USER_1))
@@ -436,12 +570,12 @@ class TestExactSystemTemplates(AITestCase):
     def test_revoke_message_is_exactly_the_requested_template(self):
         run(self.send("ai list", user_id=OWNER,
                       reply_to=self.reply_from(USER_1, username="ali")))
-        self.client.requests.clear()
+        self.client.clear_requests()
 
         run(self.send("ai list x", user_id=OWNER,
                       reply_to=self.reply_from(USER_1, username="ali")))
         expected = self.EXACT_REVOKED.format(user="@ali")
-        self.assertEqual([r.message for r in self.client.requests], [expected])
+        self.assertEqual(self.client.text_messages(), [expected])
         self.assertEqual(self.client.requests[-1].message,
                          "☰ 𝗢𝗙 𝗔𝗜  𝗨𝗭𝗘𝗥 : 「 @ali 」\n๏ 𝗳𝗼𝘅 𝗮𝗶 𝗰𝗼𝗱𝗲 🪴")
         self.assertFalse(self.store.ai_is_allowed(GROUP_A, USER_1))
@@ -497,7 +631,7 @@ class TestExactSystemTemplates(AITestCase):
         self.store.ai_set_enabled(GROUP_A, True)
         for text, user, reply in scenarios:
             with self.subTest(command=text):
-                self.client.requests.clear()
+                self.client.clear_requests()
                 run(self.send(text, user_id=user, reply_to=reply))
                 msg = self.client.requests[-1]
                 kinds = [type(e).__name__ for e in (msg.entities or [])]
@@ -539,7 +673,7 @@ class TestExactSystemTemplates(AITestCase):
                          "☰ 𝗔𝗜 𝗨𝗭𝗘𝗥 : 「 @Aifox 」\n๏ 𝗳𝗼𝘅 𝗮𝗶 𝗰𝗼𝗱𝗲 🍂")
         self.assertIn("「 @Aifox 」", self.client.requests[-1].message)
 
-        self.client.requests.clear()
+        self.client.clear_requests()
         run(self.send("ai list x", user_id=OWNER,
                       reply_to=self.reply_from(USER_1, username="Aifox")))
         self.assertIn("「 @Aifox 」", self.client.requests[-1].message)
@@ -563,7 +697,7 @@ class TestExactSystemTemplates(AITestCase):
         ]
         for command, reply, expected in cases:
             with self.subTest(command=command):
-                self.client.requests.clear()
+                self.client.clear_requests()
                 run(self.send(command, user_id=OWNER, reply_to=reply))
                 self.assertEqual(len(self.client.requests), 1)
                 self.assertEqual(self.client.requests[0].message, expected)
@@ -574,7 +708,7 @@ class TestExactSystemTemplates(AITestCase):
         run(self.send("ai list", user_id=OWNER))            # بدون Reply
         self.assertEqual(self.client.requests[-1].message, brand.AI_NEED_REPLY_TEXT)
 
-        self.client.requests.clear()
+        self.client.clear_requests()
         run(self.send("سلام", user_id=USER_2, reply_to=self.reply_from(USER_1)))
         self.assertEqual(self.texts(), [self.EXACT_DENIED])   # کاربر مجاز نیست
 
@@ -590,7 +724,7 @@ class TestPerGroupIsolation(AITestCase):
         run(self.send("سلام", user_id=USER_1, chat_id=GROUP_A,
                       reply_to=self.reply_from(USER_2)))
         self.assertEqual(self.texts(), [self.ai_client.reply])
-        self.client.requests.clear()
+        self.client.clear_requests()
 
         # گروه B → همان کاربر مجاز نیست
         run(self.send("سلام", user_id=USER_1, chat_id=GROUP_B,
@@ -656,7 +790,7 @@ class TestPVIsolation(AITestCase):
     def test_11c_ai_commands_do_not_break_pv_menu(self):
         self.make_owner()
         run(self.pv("سازنده", user_id=USER_1))     # اولین پیام → معرفی + منو
-        self.client.requests.clear()
+        self.client.clear_requests()
 
         run(self.pv("سازنده", user_id=USER_1))     # پیام بعدی → پاسخ منو
         self.assertEqual(self.texts(), ["@osine2"])
@@ -692,7 +826,7 @@ class TestPersistence(AITestCase):
 
             run(scenario())
             self.assertEqual(len(ai_client2.calls), 1, "کاربر مجاز بعد از ری‌استارت هم مجاز است")
-            self.assertEqual([r.message for r in client2.requests], ["پاسخ بعد از ری‌استارت"])
+            self.assertEqual(client2.text_messages(), ["پاسخ بعد از ری‌استارت"])
         finally:
             store2.close()
             self.store = OwnerStore(self.db)
@@ -705,7 +839,7 @@ class TestSafety(AITestCase):
         run(self.send("کدرز", user_id=USER_2))
         self.assertEqual(self.client.requests[-1].message, brand.FULL_TEXT)
 
-        self.client.requests.clear()
+        self.client.clear_requests()
         run(self.send("ai cod", user_id=USER_2))          # مالک قبلی ثابت می‌ماند
         self.assertEqual(self.client.requests, [])
         self.assertEqual(self.store.get_owner().user_id, OWNER)
@@ -863,7 +997,7 @@ class TestRealClientIntegration(AITestCase):
             "@cf/zai-org/glm-4.7-flash",
         )
         self.assertEqual(session.calls[0]["body"]["max_completion_tokens"], 128)
-        self.assertEqual([r.message for r in self.client.requests], ["تهران آفتابی است."])
+        self.assertEqual(self.client.text_messages(), ["تهران آفتابی است."])
 
 
 if __name__ == "__main__":

@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime as _dt
 import logging
 from collections import OrderedDict, deque
@@ -25,9 +26,90 @@ import brand
 from ai_client import AIConfigError, AIError, AIQuotaExceeded, CloudflareAI
 from config import Config
 from sender import BrandSender, resolve_peer
+from splusthon import functions, types
 from storage import OwnerStore
 
 log = logging.getLogger("acod.ai")
+
+# ------------------------------------------------------------------ typing indicator
+# پیام typing در MTProto حدود ۵ ثانیه روی کلاینت مخاطب نمایش داده می‌شود؛
+# پیش از پایان آن، دوباره SetTypingRequest می‌فرستیم تا وضعیت «در حال نوشتن…»
+# در حین پردازش طولانی یا retry قطع نشود.
+_TYPING_INTERVAL = 4.5
+
+
+class _TypingIndicator:
+    """مدیریت وضعیت «در حال نوشتن…» در یک چت مشخص، فقط برای طول عمر یک درخواست AI.
+
+    تضمین‌ها:
+      * با ``start()`` یک task دوره‌ای شروع می‌شود که SetTypingRequest (TypingAction)
+        را هر ``_TYPING_INTERVAL`` ثانیه تکرار می‌کند.
+      * با ``stop()`` (که در finally ی بالاسری حتماً صدا زده می‌شود) task cancel و
+        در صورت امکان یک SendMessageCancelAction ارسال می‌شود.
+      * در صورت خطای ارسال typing (مثلاً RPCError)، خطا نادیده گرفته می‌شود تا
+        باعث خرابی پاسخ اصلی نشود.
+      * تابع send از بیرون تزریق می‌شود تا هم در production (``client(...)``) و
+        هم در تست‌ها (FakeClient) قابل استفاده باشد.
+    """
+
+    __slots__ = ("_send", "_peer", "_task", "_stopped", "_log")
+
+    def __init__(self, send, peer, logger):
+        self._send = send
+        self._peer = peer
+        self._task: Optional[asyncio.Task] = None
+        self._stopped = False
+        self._log = logger
+
+    def start(self):
+        if self._stopped or self._peer is None:
+            return
+        if self._task is not None:
+            return
+        self._task = asyncio.ensure_future(self._run())
+
+    async def stop(self):
+        self._stopped = True
+        if self._task is not None:
+            self._task.cancel()
+            try:
+                await self._task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._task = None
+        if self._peer is None:
+            return
+        try:
+            await self._send(
+                functions.messages.SetTypingRequest(
+                    peer=self._peer,
+                    action=types.SendMessageCancelAction(),
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 — نباید کنسل کردن typing خطای اصلی را مخفی کند
+            self._log.debug("لغو typing ناموفق بود (نادیده گرفته می‌شود): %s", exc)
+
+    async def _run(self):
+        # یک‌بار فوراً typing فعال شود، سپس هر _TYPING_INTERVAL تکرار تا stop()
+        while not self._stopped:
+            try:
+                await self._send(
+                    functions.messages.SetTypingRequest(
+                        peer=self._peer,
+                        action=types.SendMessageTypingAction(),
+                    )
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                self._log.debug("ارسال typing ناموفق بود (نادیده گرفته می‌شود): %s", exc)
+            try:
+                await asyncio.sleep(_TYPING_INTERVAL)
+            except asyncio.CancelledError:
+                raise
+
+
+
 
 
 def utc_day(now: Optional[_dt.datetime] = None) -> str:
@@ -192,37 +274,58 @@ class GroupAI:
             await self._reply(client, event, brand.AI_QUOTA_TEXT)
             return
 
-        messages = self._build_messages(chat_id, text)
+        # تعیین peer مقصد (همان چت) — از همین resolve_peer رسمی sender استفاده می‌کنیم
+        # که SendMessageRequest هم از آن استفاده می‌کند تا typing فقط در همان چت فعال
+        # شود و اگر get_input_entity خطا بدهد، قبل از درخواست AI مشخص شود.
         try:
-            response = await self.ai.chat(messages)
-        except AIQuotaExceeded as exc:
-            log.warning("Cloudflare سهمیه را تمام‌شده اعلام کرد: %s", exc)
-            self.store.ai_exhaust_quota(chat_id, day, self.cfg.ai_daily_quota)
-            await self._reply(client, event, brand.AI_QUOTA_TEXT)
-            return
-        except AIConfigError as exc:
-            log.error("تنظیمات AI کامل نیست: %s", exc)
-            await self._reply(client, event, brand.AI_CONFIG_ERROR_TEXT)
-            return
-        except AIError as exc:
-            log.error("خطای AI: %s", exc)
-            await self._reply(client, event, brand.AI_ERROR_TEXT)
-            return
+            peer = await resolve_peer(event)
+        except Exception as exc:  # noqa: BLE001
+            log.error("تعیین peer چت برای typing ممکن نشد: %s", exc)
+            peer = None
 
-        self._push_history(chat_id, "user", text)
-        self._push_history(chat_id, "assistant", response.text)
+        typing_indicator = _TypingIndicator(client, peer, log)
+        # از همین لحظه typing را فعال می‌کنیم و تضمین می‌کنیم در هر شرایطی
+        # (موفقیت / خطا / timeout / retry / خالی بودن پاسخ) متوقف شود.
+        typing_indicator.start()
+        # یک شیفت به event loop می‌دهیم تا اولین SetTypingRequest پیش از شروع
+        # درخواست AI ارسال شود (واسطه‌ی تایمینگ در پاسخ‌های بسیار سریع).
+        await asyncio.sleep(0)
+        try:
+            messages = self._build_messages(chat_id, text)
+            try:
+                response = await self.ai.chat(messages)
+            except AIQuotaExceeded as exc:
+                log.warning("Cloudflare سهمیه را تمام‌شده اعلام کرد: %s", exc)
+                self.store.ai_exhaust_quota(chat_id, day, self.cfg.ai_daily_quota)
+                await self._reply(client, event, brand.AI_QUOTA_TEXT)
+                return
+            except AIConfigError as exc:
+                log.error("تنظیمات AI کامل نیست: %s", exc)
+                await self._reply(client, event, brand.AI_CONFIG_ERROR_TEXT)
+                return
+            except AIError as exc:
+                log.error("خطای AI: %s", exc)
+                await self._reply(client, event, brand.AI_ERROR_TEXT)
+                return
 
-        # پاسخ مدل، در همان گروه و در پاسخ به همان پیام کاربر
-        for chunk in brand.chunk_lines(response.text.split("\n"), self.cfg.max_message_chars):
-            report = await self.sender.send_text(
-                client,
-                await resolve_peer(event),
-                chunk,
-                reply_to_msg_id=getattr(event, "id", None),
-            )
-            if not report.ok:
-                log.error("ارسال پاسخ AI ناموفق بود: %s | %s",
-                          report.error, report.attempts)
+            self._push_history(chat_id, "user", text)
+            self._push_history(chat_id, "assistant", response.text)
+
+            # پاسخ مدل، در همان گروه و در پاسخ به همان پیام کاربر
+            for chunk in brand.chunk_lines(response.text.split("\n"), self.cfg.max_message_chars):
+                report = await self.sender.send_text(
+                    client,
+                    peer,
+                    chunk,
+                    reply_to_msg_id=getattr(event, "id", None),
+                )
+                if not report.ok:
+                    log.error("ارسال پاسخ AI ناموفق بود: %s | %s",
+                              report.error, report.attempts)
+        finally:
+            # قطع/لغو وضعیت typing در هر حالت: موفقیت، خطا، یا حتی استثنای غافلگیرکننده
+            await typing_indicator.stop()
+
 
     # ------------------------------------------------------------------ کمکی‌ها
     async def _reply(self, client, event, text: str) -> None:

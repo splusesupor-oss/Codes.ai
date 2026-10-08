@@ -137,18 +137,18 @@ class TestOwnerActivationInGroups(FlowTestCase):
         self.assertEqual(len(self.client.requests), 1)
 
         for group in (GROUP_A, GROUP_B, GROUP_C, GROUP_A):            # هر بار، هر گروه
-            self.client.requests.clear()
+            self.client.clear_requests()
             run(self.send("ai cod", user_id=USER_1, chat_id=group))
             self.assertEqual(len(self.client.requests), 1, f"گروه {group}")
             self.assertEqual(self.client.requests[0].message, brand.FULL_TEXT)
 
     def test_ai_code_spelling_activates_and_sends_the_same_initial_text(self):
         run(self.send("ai cod", user_id=USER_1, chat_id=GROUP_A))
-        self.client.requests.clear()
+        self.client.clear_requests()
 
         run(self.send("ai code", user_id=USER_1, chat_id=GROUP_B))
 
-        self.assertEqual([r.message for r in self.client.requests], [brand.FULL_TEXT])
+        self.assertEqual(self.client.text_messages(), [brand.FULL_TEXT])
         self.assertEqual(self.store.get_owner().user_id, USER_1)
         first = self.client.requests[0]
         self.assertTrue(first.entities, "متن معرفی باید همان قالب Blockquote+Bold را داشته باشد")
@@ -167,7 +167,7 @@ class TestOwnerActivationInGroups(FlowTestCase):
 
     def test_non_owner_gets_nothing_and_changes_nothing(self):
         run(self.send("ai cod", user_id=USER_1, chat_id=GROUP_A))
-        self.client.requests.clear()
+        self.client.clear_requests()
 
         for text in ("ai cod", "ai code", "AI CODE"):
             run(self.send(text, user_id=USER_2, chat_id=GROUP_B))
@@ -181,7 +181,7 @@ class TestOwnerActivationInGroups(FlowTestCase):
         run(self.send("ai cod", user_id=USER_1, chat_id=GROUP_A))
         self.assertFalse(self.store.ai_is_enabled(GROUP_A))
 
-        self.client.requests.clear()
+        self.client.clear_requests()
         run(self.send("ai code", user_id=USER_1, chat_id=GROUP_A))
         self.assertFalse(self.store.ai_is_enabled(GROUP_A), "«ai cod» نباید AI را روشن کند")
 
@@ -209,18 +209,18 @@ class TestOwnerActivationInGroups(FlowTestCase):
     def test_kodrez_still_works_for_everyone_in_every_group(self):
         """طبق تصمیم کاربر: «کدرز» برای همه آزاد می‌ماند؛ فقط دستورهای AI/مدیریتی مالک‌محورند."""
         run(self.send("ai cod", user_id=USER_1, chat_id=GROUP_A))   # مالک: USER_1
-        self.client.requests.clear()
+        self.client.clear_requests()
 
         for user in (USER_1, USER_2, USER_3):
             for group in (GROUP_A, GROUP_B):
-                self.client.requests.clear()
+                self.client.clear_requests()
                 run(self.send("کدرز", user_id=user, chat_id=group))
                 self.assertEqual(len(self.client.requests), 1)
                 self.assertEqual(self.client.requests[0].message, brand.FULL_TEXT)
 
     def test_ai_management_commands_stay_owner_only(self):
         run(self.send("ai cod", user_id=USER_1, chat_id=GROUP_A))
-        self.client.requests.clear()
+        self.client.clear_requests()
 
         for text in ("ai online", "ai of", "ai list", "ai list x", "تعداد اعضا", "لیست اعضا"):
             run(self.send(text, user_id=USER_2, chat_id=GROUP_B))
@@ -358,7 +358,7 @@ class TestPrivateChat(FlowTestCase):
         # «کدرز» فقط دستور گروهی است؛ در PV گزینه‌ی منو نیست →
         # کاربر فقط همان معرفی + منوی اولین پیام را می‌گیرد (بدون پاسخ اضافه)
         run(self.send("کدرز", user_id=USER_2, chat_id=USER_2, is_group=False))
-        self.assertEqual([r.message for r in self.client.requests],
+        self.assertEqual(self.client.text_messages(),
                          [brand.FULL_TEXT, brand.MENU_TEXT])
         self.assertIsNone(self.store.get_owner())
 
