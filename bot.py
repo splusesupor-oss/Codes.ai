@@ -20,6 +20,8 @@ import sys
 
 from splusthon import SoroushClient, events
 
+from splusthon_patch import apply_patch as _apply_splusthon_patch
+
 from ai_client import CloudflareAI
 from ai_service import GroupAI
 from config import Config, ensure_data_dir
@@ -124,6 +126,8 @@ async def run(cfg: Config) -> None:
 
 def main() -> int:
     cfg = Config.from_env()
+    # اعمال پچ ایمن keepalive/reconnect برای SPlusthon 1.1.4 (بدون دست‌زدن به site-packages).
+    _apply_splusthon_patch()
     try:
         asyncio.run(run(cfg))
     except KeyboardInterrupt:
