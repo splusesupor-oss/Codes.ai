@@ -73,6 +73,14 @@ OWNER_COMMAND = "ai cod"      # دستور فعال‌سازی مالک سراس
 OWNER_COMMAND_ALIASES = ("ai cod", "ai code")
 KODREZ_COMMAND = "کدرز"       # دستور معرفی؛ برای همه آزاد است
 
+# دستورات جدید سیستم
+TERY_AI_COMMAND = "Tery ai"   # ثبت مالک ربات توسط مالک سراسری
+AI_XCOD_COMMAND = "ai x cod"  # فعال‌سازی ربات در گروه (فقط مالک سراسری)
+AI_L_COMMAND = "ai L"         # نمایش لیست کاربران مجاز گروه
+AI_PLUN_COMMAND = "ai plun"   # نمایش باقیمانده سهمیه روزانه
+AI_SINGLE_COMMAND = "ai"      # صدا زدن ربات («جانم 👾»)
+HELP_COMMAND = "راهنما"        # راهنمای فارسی با فرمت خاص
+
 # ---------------------------------------------------------------------------
 # پرچم‌های رفتاری
 # ---------------------------------------------------------------------------
@@ -96,22 +104,24 @@ PV_UNKNOWN_NAME = "کاربر بدون نام"
 # ---------------------------------------------------------------------------
 # هوش مصنوعی گروه‌ها (فقط GROUP) — Cloudflare Workers AI
 # ---------------------------------------------------------------------------
-AI_ONLINE_COMMAND = "ai online"     # روشن کردن AI برای همان گروه (فقط مالک سراسری)
-AI_OF_COMMAND = "ai of"             # خاموش کردن AI برای همان گروه (فقط مالک سراسری)
-AI_LIST_COMMAND = "ai list"         # مجاز کردن کاربرِ Reply‌شده (فقط مالک سراسری)
-AI_LISTX_COMMAND = "ai list x"      # حذف مجوز کاربرِ Reply‌شده (فقط مالک سراسری)
+AI_ONLINE_COMMAND = "ai online"     # روشن کردن AI برای همان گروه (مالک سراسری یا مالک ثبت‌شده)
+AI_OF_COMMAND = "ai of"             # خاموش کردن AI برای همان گروه (مالک سراسری یا مالک ثبت‌شده)
+AI_LIST_COMMAND = "ai list"         # مجاز کردن کاربرِ Reply‌شده (مالک سراسری یا مالک ثبت‌شده)
+AI_LISTX_COMMAND = "ai list x"      # حذف مجوز کاربرِ Reply‌شده (مالک سراسری یا مالک ثبت‌شده)
 
 # مدل واقعی Cloudflare Workers AI
 AI_MODEL = "@cf/meta/llama-3.1-8b-instruct-fp8-fast"
 
-# سهمیه‌ی داخلی روزانه به تفکیک هر گروه (بر اساس روز UTC، هماهنگ با ریست Cloudflare)
-# هر گروه مستقل از بقیه، روزانه تا این تعداد درخواست به مدل می‌فرستد.
+# سهمیه‌ی داخلی روزانه به تفکیک هر گروه (ریست در 00:00 به وقت Asia/Tehran)
 AI_DAILY_QUOTA = 5000
 
+# حداکثر تعداد کاربران مجاز هوش مصنوعی در هر گروه
+AI_MAX_ALLOWED_USERS = 3
+
+# منطقه زمانی ریست سهمیه روزانه
+AI_QUOTA_TIMEZONE = "Asia/Tehran"
+
 # محدودیت‌های مصرف برای هر درخواست
-# سقف توکن خروجی مدل. مدل پیش‌فرض (glm-4.7-flash) «استدلالی» است و بودجه‌ی توکن بین
-# استدلال و پاسخ مشترک است؛ با بودجه‌ی کم، پاسخ می‌تواند خالی برگردد (finish_reason=length).
-# بنابراین پیش‌فرض ۱۰۲۴ است (قابل کم/زیاد کردن با ACOD_AI_MAX_OUTPUT_TOKENS).
 AI_MAX_OUTPUT_TOKENS = 1024
 AI_MAX_INPUT_CHARS = 800            # طول متن ورودی هر پیام کاربر (مازاد بریده می‌شود)
 AI_HISTORY_PAIRS = 2                # چند جفت گفت‌وگو در حافظه نگه داشته شود (۰ = بدون تاریخچه)
@@ -132,22 +142,13 @@ LINK_PREVIEW = False
 
 # حالت ارسال «نقل قول شیشه‌ای»:
 #   "entity"  → نقل‌قول به‌صورت entity واقعی سروش/تلگرام (MessageEntityBlockquote)
-#               روی خط اول پیام؛ کاملاً مستقل و بدون نیاز به پیام مرجع.
-#   "reply"   → نقل‌قول واقعی MTProto یعنی «reply + quote_text» (همان قابلیتِ
-#               «انتخاب متن → سه‌نقطه → نقل قول» در خود سروش پلاس). برای این حالت
-#               باید پیام مرجعی وجود داشته باشد که خط تیتر داخلش باشد
-#               (پارامتر quote_from_msg_id).
+#   "reply"   → نقل‌قول واقعی MTProto یعنی «reply + quote_text»
 #   "off"     → بدون نقل‌قول (فقط Bold).
 QUOTE_MODE = "entity"
 
 # در حالت "reply": اگر سرور سروش این حالت را نپذیرفت، به حالت "entity" برگردد؟
 QUOTE_REPLY_FALLBACK_TO_ENTITY = True
 
-# اگر همان مالکِ قبلی دوباره «ai cod» بزند:
-#   False → کاملاً نادیده گرفته شود (مالک جدیدی ساخته نمی‌شود)  [پیش‌فرض]
-#   True  → پیام معرفی برای او ارسال شود (ولی باز هم مالک جدید ساخته نمی‌شود)
-# هر بار مالک سراسری «ai cod» را در یک گروه بفرستد، همان متن معرفی (پیام اولیه) ارسال شود
-# → یعنی مالک می‌تواند ربات «ai fox» را در هر گروهی که می‌خواهد فعال/معرفی کند.
 ANNOUNCE_ON_OWNER_REPEAT = True
 
 
@@ -155,14 +156,14 @@ ANNOUNCE_ON_OWNER_REPEAT = True
 class Config:
     """تنظیمات اجرای ربات (قابل بازنویسی با متغیرهای محیطی)."""
 
-    # --- فایل سشن (این فایل = دسترسی کامل به اکانت؛ هرگز به کسی ندهید) ---
+    # --- فایل سشن ---
     session_path: Path = DATA_DIR / "acod_userbot"
 
-    # --- مقادیر عمومی کلاینت سروش پلاس (Bot Token نیستند) ---
+    # --- مقادیر عمومی کلاینت سروش پلاس ---
     api_id: int = 1030400
     api_hash: str = "6edb16cf88714a4e9a805e928c39c937"
 
-    # --- لاگین (اختیاری؛ اگر خالی باشند به‌صورت تعاملی پرسیده می‌شود) ---
+    # --- لاگین ---
     phone: str | None = None
     twofa_password: str | None = None
 
@@ -173,6 +174,12 @@ class Config:
     owner_command: str = OWNER_COMMAND
     owner_command_aliases: tuple = OWNER_COMMAND_ALIASES
     kodrez_command: str = KODREZ_COMMAND
+    tery_ai_command: str = TERY_AI_COMMAND
+    ai_xcod_command: str = AI_XCOD_COMMAND
+    ai_l_command: str = AI_L_COMMAND
+    ai_plun_command: str = AI_PLUN_COMMAND
+    ai_single_command: str = AI_SINGLE_COMMAND
+    help_command: str = HELP_COMMAND
     groups_only: bool = GROUPS_ONLY
     private_auto_reply: bool = PRIVATE_AUTO_REPLY
     pv_count_command: str = PV_COUNT_COMMAND
@@ -181,9 +188,6 @@ class Config:
     max_message_chars: int = MAX_MESSAGE_CHARS
 
     # --- هوش مصنوعی (Cloudflare Workers AI) ---
-    # این دو مقدار Secret هستند و از `.env`/محیط می‌آیند؛ چون default_factory دارند،
-    # هم `Config()` و هم `Config.from_env()` مقدار واقعی را می‌گیرند
-    # (پیش از این فقط `from_env()` آن‌ها را map می‌کرد و `Config()` همیشه None می‌داد).
     cloudflare_account_id: str | None = field(
         default_factory=lambda: _env_str("CLOUDFLARE_ACCOUNT_ID")
     )
@@ -196,6 +200,8 @@ class Config:
     ai_list_command: str = AI_LIST_COMMAND
     ai_listx_command: str = AI_LISTX_COMMAND
     ai_daily_quota: int = AI_DAILY_QUOTA
+    ai_max_allowed_users: int = AI_MAX_ALLOWED_USERS
+    ai_quota_timezone: str = AI_QUOTA_TIMEZONE
     ai_max_output_tokens: int = AI_MAX_OUTPUT_TOKENS
     ai_max_input_chars: int = AI_MAX_INPUT_CHARS
     ai_history_pairs: int = AI_HISTORY_PAIRS
@@ -222,6 +228,12 @@ class Config:
                 ).split(",") if a.strip()
             ),
             kodrez_command=os.environ.get("ACOD_KODREZ_COMMAND", KODREZ_COMMAND),
+            tery_ai_command=os.environ.get("ACOD_TERY_AI_COMMAND", TERY_AI_COMMAND),
+            ai_xcod_command=os.environ.get("ACOD_AI_XCOD_COMMAND", AI_XCOD_COMMAND),
+            ai_l_command=os.environ.get("ACOD_AI_L_COMMAND", AI_L_COMMAND),
+            ai_plun_command=os.environ.get("ACOD_AI_PLUN_COMMAND", AI_PLUN_COMMAND),
+            ai_single_command=os.environ.get("ACOD_AI_SINGLE_COMMAND", AI_SINGLE_COMMAND),
+            help_command=os.environ.get("ACOD_HELP_COMMAND", HELP_COMMAND),
             groups_only=os.environ.get("ACOD_GROUPS_ONLY", "1") not in ("0", "false", "False"),
             private_auto_reply=os.environ.get("ACOD_PRIVATE_AUTO_REPLY", "1")
             not in ("0", "false", "False"),
@@ -240,6 +252,8 @@ class Config:
             ai_list_command=os.environ.get("ACOD_AI_LIST_COMMAND", AI_LIST_COMMAND),
             ai_listx_command=os.environ.get("ACOD_AI_LISTX_COMMAND", AI_LISTX_COMMAND),
             ai_daily_quota=int(os.environ.get("ACOD_AI_DAILY_QUOTA", AI_DAILY_QUOTA)),
+            ai_max_allowed_users=int(os.environ.get("ACOD_AI_MAX_ALLOWED_USERS", AI_MAX_ALLOWED_USERS)),
+            ai_quota_timezone=os.environ.get("ACOD_AI_QUOTA_TIMEZONE", AI_QUOTA_TIMEZONE),
             ai_max_output_tokens=int(os.environ.get("ACOD_AI_MAX_OUTPUT_TOKENS", AI_MAX_OUTPUT_TOKENS)),
             ai_max_input_chars=int(os.environ.get("ACOD_AI_MAX_INPUT_CHARS", AI_MAX_INPUT_CHARS)),
             ai_history_pairs=int(os.environ.get("ACOD_AI_HISTORY_PAIRS", AI_HISTORY_PAIRS)),
@@ -258,5 +272,4 @@ def ensure_data_dir(cfg: Config) -> None:
         Path(p).mkdir(parents=True, exist_ok=True)
 
 
-# در زمان import، فایل .env (اگر وجود داشته باشد) بارگذاری می‌شود.
 load_env_file()

@@ -1,36 +1,67 @@
 """
 ابزارهای جعلی (Fake) برای تست کامل منطق ربات بدون نیاز به لاگین واقعی.
-
-این‌ها فقط «شبیه‌ساز» ورودی/خروجی هستند؛ هیچ درخواست شبکه‌ای انجام نمی‌شود و
-هیچ endpoint ساختگی‌ای هم به پروژه اضافه نمی‌کنند. کلاینتی که در تست‌ها استفاده
-می‌شود، همان امضای SoroushClient را دارد (get_input_entity + __call__) و درخواست‌های
-واقعی messages.SendMessageRequest را ثبت می‌کند.
 """
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, Any
 
 from splusthon import functions, types
-from splusthon.tl.functions.messages import SetTypingRequest  # noqa: E402
+from splusthon.tl.functions.messages import SetTypingRequest
+
+
+class FakeChat:
+    def __init__(self, title: str = "گروه تست"):
+        self.title = title
+
+
+class FakeUserParticipant:
+    def __init__(
+        self,
+        user_id: int,
+        *,
+        first_name: str = "User",
+        last_name: str = "",
+        username: Optional[str] = None,
+        is_creator: bool = False,
+        is_admin: bool = False,
+    ):
+        self.id = user_id
+        self.first_name = first_name
+        self.last_name = last_name
+        self.username = username
+        if is_creator:
+            self.participant = types.ChatParticipantCreator(user_id=user_id)
+        elif is_admin:
+            self.participant = types.ChatParticipantAdmin(
+                user_id=user_id, inviter_id=0, date=None
+            )
+        else:
+            self.participant = types.ChatParticipant(
+                user_id=user_id, inviter_id=0, date=None
+            )
 
 
 class FakeClient:
     """کلاینت جعلی: درخواست‌های واقعی MTProto را فقط ثبت می‌کند."""
 
-    def __init__(self, *, reject_blockquote: bool = False, reject_all: bool = False,
-                 _request_side_effect=None, me_id: int = 777000):
-        # همهٔ درخواست‌ها (از جمله SetTypingRequest) در این لیست ذخیره می‌شوند.
+    def __init__(
+        self,
+        *,
+        reject_blockquote: bool = False,
+        reject_all: bool = False,
+        _request_side_effect=None,
+        me_id: int = 777000,
+        participants: Optional[dict[int, list]] = None,
+    ):
         self.all_requests: list = []
         self.reject_blockquote = reject_blockquote
         self.reject_all = reject_all
         self._next_id = 100
-        self._side_effect = _request_side_effect  # برای کنترل دقیق‌تر در تست (callable(req) -> raise/None)
-        self.me_id = me_id  # شناسهٔ «خودِ ربات» در FakeClient
-        # برای سازگاری با تست‌های قبلی: self.requests فقط درخواست‌هایی را نشان
-        # می‌دهد که پیام هستند (نه SetTypingRequest)، تا متدهای prev نظیر
-        # texts() و self.client.requests[-1].message در تست‌های موجود از کار نیفتند.
+        self._side_effect = _request_side_effect
+        self.me_id = me_id
         self._expose_messages_only = True
+        self.participants = participants or {}
 
     @property
     def requests(self):
@@ -40,22 +71,30 @@ class FakeClient:
 
     @requests.setter
     def requests(self, value):
-        # برای سازگاری با کدهای قبلی که self.requests را مستقیماً مقداردهی می‌کنند
         self.all_requests = list(value) if value is not None else []
 
     async def get_me(self, input_peer=False):
-        u = types.User(id=self.me_id, is_self=True, access_hash=0,
-                       first_name="acod", username=None, phone=None)
+        u = types.User(
+            id=self.me_id,
+            is_self=True,
+            access_hash=0,
+            first_name="acod",
+            username=None,
+            phone=None,
+        )
         if input_peer:
             return types.InputPeerUser(user_id=self.me_id, access_hash=0)
         return u
 
     async def get_input_entity(self, chat):
-        # مثل خود SPlusthon: شناسه‌ی مثبت = کاربر (PV)، منفی = گروه
         chat_id = int(chat)
         if chat_id > 0:
             return types.InputPeerUser(user_id=chat_id, access_hash=0)
         return types.InputPeerChat(chat_id=abs(chat_id))
+
+    async def get_participants(self, chat, filter=None):
+        chat_id = int(chat)
+        return self.participants.get(chat_id, [])
 
     async def __call__(self, request, ordered=False):
         if self._side_effect is not None:
@@ -87,7 +126,6 @@ class FakeClient:
             seq=0,
         )
 
-    # ------------------------------------------------------------ ابزار تحلیل
     def last_request(self):
         reqs = self.requests
         return reqs[-1] if reqs else None
@@ -108,16 +146,13 @@ class FakeClient:
         return out
 
     def text_messages(self) -> list[str]:
-        """فقط متن SendMessageRequest ها (برای تست‌هایی که نباید Typing را ببینند)."""
         return [
             r.message
             for r in self.requests
             if hasattr(r, "message") and not isinstance(r, SetTypingRequest)
         ]
 
-    # ----------------------------------------------------- typing inspection
     def typing_requests(self):
-        """فهرست SetTypingRequest هایی که تا کنون فرستاده شده‌اند."""
         return [r for r in self.all_requests if isinstance(r, SetTypingRequest)]
 
     def clear_requests(self):
@@ -140,10 +175,13 @@ class FakeClient:
 
 
 class FakeSender:
-    """کاربر سروش (فقط اطلاعات نمایشی برای لاگ/حافظه)."""
-
-    def __init__(self, user_id: int, first_name: str = "User", last_name: str = "",
-                 username: Optional[str] = None):
+    def __init__(
+        self,
+        user_id: int,
+        first_name: str = "User",
+        last_name: str = "",
+        username: Optional[str] = None,
+    ):
         self.id = user_id
         self.first_name = first_name
         self.last_name = last_name
@@ -151,24 +189,27 @@ class FakeSender:
 
 
 class FakeReplyMessage:
-    """پیام مرجعی که کاربر روی آن Reply کرده است (خروجی get_reply_message)."""
-
-    def __init__(self, *, sender_id: int, text: str = "", msg_id: int = 1,
-                 username: Optional[str] = None, display_name: str = "User",
-                 out: bool = False):
+    def __init__(
+        self,
+        *,
+        sender_id: int,
+        text: str = "",
+        msg_id: int = 1,
+        username: Optional[str] = None,
+        display_name: str = "User",
+        out: bool = False,
+    ):
         self.sender_id = sender_id
         self.raw_text = text
         self.id = msg_id
         self.sender = FakeSender(sender_id, first_name=display_name, username=username)
-        self.out = out  # True یعنی این پیام reply شده «خودِ ربات» فرستاده (در SPlusthon)
+        self.out = out
 
 
 class FakeAI:
-    """کلاینت جعلی هوش مصنوعی: هیچ درخواست شبکه‌ای انجام نمی‌شود."""
-
     def __init__(self, reply: str = "پاسخ تست هوش مصنوعی", *, error=None):
         self.reply = reply
-        self.error = error            # در صورت نیاز: نمونه‌ی AIError/AIQuotaExceeded
+        self.error = error
         self.calls: list[list[dict]] = []
 
     @property
@@ -187,8 +228,6 @@ class FakeAI:
 
 
 class FakeEvent:
-    """شبیه‌ساز events.NewMessage با همان attributeهایی که core استفاده می‌کند."""
-
     def __init__(
         self,
         text: str,
@@ -202,24 +241,24 @@ class FakeEvent:
         username: Optional[str] = None,
         display_name: Optional[str] = None,
         reply_to: "FakeReplyMessage | None" = None,
+        chat_title: Optional[str] = None,
+        chat: Any = None,
     ):
         self.raw_text = text
         self.sender_id = user_id
         self.chat_id = chat_id
         self.id = msg_id
         self.is_group = is_group
-        # مطابق SPlusthon: is_private ↔ PeerUser بودن چت (در PV، chat_id همان شناسه‌ی کاربر است)
         self.is_private = (not is_group) if is_private is None else is_private
         self.out = out
-        # --- Reply (مطابق API واقعی: is_reply / reply_to_msg_id / get_reply_message) ---
         self._reply_message = reply_to
         self.reply_to_msg_id = reply_to.id if reply_to is not None else None
         self.sender = FakeSender(
             user_id,
-            # None → نام پیش‌فرض؛ رشته‌ی خالی → کاربر بدون نام (برای تست fallback)
             first_name=(display_name if display_name is not None else "User"),
             username=username,
         )
+        self.chat = chat or FakeChat(title=chat_title or "گروه تست")
 
     @property
     def is_reply(self) -> bool:
@@ -227,6 +266,9 @@ class FakeEvent:
 
     async def get_reply_message(self):
         return self._reply_message
+
+    async def get_chat(self):
+        return self.chat
 
     async def get_input_chat(self):
         if self.is_private:

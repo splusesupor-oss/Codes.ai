@@ -1,7 +1,8 @@
 """
-ابزار خط فرمان برای مدیریت حافظه‌ی مالک سراسری (بدون نیاز به اتصال به شبکه).
+ابزار خط فرمان برای مدیریت حافظه‌ی مالک سراسری و تنظیمات ربات (بدون نیاز به اتصال به شبکه).
 
     python manage.py owner            # نمایش مالک فعلی
+    python manage.py status           # نمایش وضعیت کامل تنظیمات، مالک و انقضا
     python manage.py attempts         # تاریخچه‌ی همه‌ی «ai cod»ها
     python manage.py export           # خروجی JSON از مالک
     python manage.py reset-owner --yes  # حذف مالک (برای تست/شروع دوباره)
@@ -19,7 +20,7 @@ from storage import OwnerStore
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="مدیریت حافظه‌ی مالک سراسری ربات ai cod")
     parser.add_argument(
-        "action", choices=["owner", "attempts", "export", "reset-owner"]
+        "action", choices=["owner", "status", "attempts", "export", "reset-owner"]
     )
     parser.add_argument("--yes", action="store_true", help="تأیید برای reset-owner")
     args = parser.parse_args(argv)
@@ -40,6 +41,27 @@ def main(argv=None) -> int:
                 print(f"پیام           : {owner.claimed_message_id}")
                 print(f"زمان (UTC)     : {owner.claimed_at}")
 
+        elif args.action == "status":
+            owner = store.get_owner()
+            reg_owner = store.get_registered_bot_owner()
+            quota = store.get_daily_quota(cfg.ai_daily_quota)
+            max_users = store.get_max_allowed_users(cfg.ai_max_allowed_users)
+            exp = store.get_expiration()
+            is_exp = store.is_expired()
+            is_susp = store.is_global_suspended()
+
+            print("=== وضعیت ربات Acode AI ===")
+            print(f"مالک سراسری (Global Owner)  : {owner.user_id if owner else 'ثبت نشده'}")
+            if reg_owner:
+                print(f"مالک ثبت‌شده (Registered Owner): {reg_owner.user_id} (@{reg_owner.username or '-'})")
+            else:
+                print("مالک ثبت‌شده (Registered Owner): ندارد")
+            print(f"سهمیه روزانه گروه           : {quota} پیام")
+            print(f"سقف اعضای مجاز هر گروه     : {max_users} عضو")
+            print(f"تعلیق کلی (Suspended)      : {'بله' if is_susp else 'خیر'}")
+            print(f"تاریخ انقضا                : {exp.isoformat() if exp else 'تنظیم نشده'}")
+            print(f"وضعیت انقضا                : {'منقضی شده' if is_exp else 'معتبر'}")
+
         elif args.action == "attempts":
             rows = store.attempts()
             if not rows:
@@ -58,8 +80,8 @@ def main(argv=None) -> int:
             if owner is None:
                 print("مالکی وجود ندارد.")
                 return 0
-            store._conn.execute("DELETE FROM global_owner")   # noqa: SLF001 — ابزار داخلی
-            store._conn.commit()                              # noqa: SLF001
+            store._conn.execute("DELETE FROM global_owner")
+            store._conn.commit()
             print(f"مالک قبلی (user_id={owner.user_id}) حذف شد.")
     finally:
         store.close()

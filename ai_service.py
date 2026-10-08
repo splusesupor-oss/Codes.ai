@@ -2,16 +2,14 @@
 سرویس هوش مصنوعی گروه‌ها (فقط GROUP — هیچ ارتباطی با PV ندارد).
 
 قواعدی که این ماژول پیاده می‌کند:
-
-  * «ai online» / «ai of»  → روشن/خاموش کردن AI برای «همان گروه» (فقط مالک سراسری).
-  * «ai list» (با Reply روی پیام کاربر)  → مجاز کردن آن کاربر برای همان گروه.
+  * «ai online» / «ai of»  → روشن/خاموش کردن AI برای «همان گروه» (مالک سراسری یا مالک ثبت‌شده).
+  * «ai list» (با Reply روی پیام کاربر)  → مجاز کردن آن کاربر با رعایت سقف مجاز اعضا.
   * «ai list x» (با Reply روی پیام کاربر) → حذف مجوز همان کاربر در همان گروه.
-  * صحبت با AI فقط با «Reply + متن» در گروهی که AI روشن است انجام می‌شود.
-  * همه‌ی وضعیت‌ها per-group هستند: enabled، کاربران مجاز و مصرف روزانه.
-  * کنترل مصرف: سهمیه‌ی روزانه به تفکیک گروه و بر اساس روز UTC + محدودیت طول ورودی
-    و حداکثر توکن خروجی + تاریخچه‌ی کوتاه و محدود.
-  * تشخیص مالک از همان سیستم واقعی پروژه (OwnerStore.is_owner) و بر اساس user_id؛
-    به username هیچ اعتمادی نمی‌شود.
+  * «ai L» → نمایش فهرست کاربران مجاز همان گروه.
+  * صحبت با AI فقط با «Reply + متن» روی پیام ربات در گروهی که AI روشن است انجام می‌شود.
+  * مالک ثبت‌شده (Registered Bot Owner) بدون نیاز به مجوز صحبت می‌کند و سهمیه عضویت مصرف نمی‌کند،
+    اما درخواست‌هایش از سهمیه روزانه گروه کسر می‌شود.
+  * کنترل مصرف: سهمیه‌ی روزانه به تفکیک گروه با ریست در 00:00 Asia/Tehran.
 """
 
 from __future__ import annotations
@@ -19,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import datetime as _dt
 import logging
+import zoneinfo
 from collections import OrderedDict, deque
 from typing import Optional
 
@@ -31,26 +30,12 @@ from storage import OwnerStore
 
 log = logging.getLogger("acod.ai")
 
-# ------------------------------------------------------------------ typing indicator
-# پیام typing در MTProto حدود ۵ ثانیه روی کلاینت مخاطب نمایش داده می‌شود؛
-# پیش از پایان آن، دوباره SetTypingRequest می‌فرستیم تا وضعیت «در حال نوشتن…»
-# در حین پردازش طولانی یا retry قطع نشود.
+TEHRAN_TZ = zoneinfo.ZoneInfo("Asia/Tehran")
 _TYPING_INTERVAL = 4.5
 
 
 class _TypingIndicator:
-    """مدیریت وضعیت «در حال نوشتن…» در یک چت مشخص، فقط برای طول عمر یک درخواست AI.
-
-    تضمین‌ها:
-      * با ``start()`` یک task دوره‌ای شروع می‌شود که SetTypingRequest (TypingAction)
-        را هر ``_TYPING_INTERVAL`` ثانیه تکرار می‌کند.
-      * با ``stop()`` (که در finally ی بالاسری حتماً صدا زده می‌شود) task cancel و
-        در صورت امکان یک SendMessageCancelAction ارسال می‌شود.
-      * در صورت خطای ارسال typing (مثلاً RPCError)، خطا نادیده گرفته می‌شود تا
-        باعث خرابی پاسخ اصلی نشود.
-      * تابع send از بیرون تزریق می‌شود تا هم در production (``client(...)``) و
-        هم در تست‌ها (FakeClient) قابل استفاده باشد.
-    """
+    """مدیریت وضعیت «در حال نوشتن…» در یک چت مشخص، فقط برای طول عمر یک درخواست AI."""
 
     __slots__ = ("_send", "_peer", "_task", "_stopped", "_log")
 
@@ -86,11 +71,10 @@ class _TypingIndicator:
                     action=types.SendMessageCancelAction(),
                 )
             )
-        except Exception as exc:  # noqa: BLE001 — نباید کنسل کردن typing خطای اصلی را مخفی کند
+        except Exception as exc:  # noqa: BLE001
             self._log.debug("لغو typing ناموفق بود (نادیده گرفته می‌شود): %s", exc)
 
     async def _run(self):
-        # یک‌بار فوراً typing فعال شود، سپس هر _TYPING_INTERVAL تکرار تا stop()
         while not self._stopped:
             try:
                 await self._send(
@@ -109,11 +93,19 @@ class _TypingIndicator:
                 raise
 
 
-
+def tehran_day(now: Optional[_dt.datetime] = None) -> str:
+    """روز جاری بر اساس ساعت ایران (Asia/Tehran) به شکل YYYY-MM-DD."""
+    if now is None:
+        now = _dt.datetime.now(TEHRAN_TZ)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=_dt.timezone.utc).astimezone(TEHRAN_TZ)
+    else:
+        now = now.astimezone(TEHRAN_TZ)
+    return now.strftime("%Y-%m-%d")
 
 
 def utc_day(now: Optional[_dt.datetime] = None) -> str:
-    """روز جاری بر اساس UTC (هماهنگ با ریست سهمیه‌ی Cloudflare) به شکل YYYY-MM-DD."""
+    """روز جاری بر اساس UTC به شکل YYYY-MM-DD (برای سازگاری با تست‌های قدیمی)."""
     now = now or _dt.datetime.now(_dt.timezone.utc)
     return now.astimezone(_dt.timezone.utc).strftime("%Y-%m-%d")
 
@@ -143,24 +135,27 @@ class GroupAI:
         self._retry_max = int(getattr(cfg, "ai_retry_max", 3))
         self._retry_base_delay = float(getattr(cfg, "ai_retry_base_delay", 1.2))
         self._now = now_provider or _dt.datetime.now
-        # تاریخچه‌ی کوتاه هر گروه (فقط در حافظه؛ با ری‌استارت پاک می‌شود)
         self._history: "OrderedDict[int, deque]" = OrderedDict()
 
     # ------------------------------------------------------------------ کمکی‌ها
     def _day(self) -> str:
-        return utc_day(self._now(_dt.timezone.utc))
+        tz_name = getattr(self.cfg, "ai_quota_timezone", "Asia/Tehran")
+        if tz_name == "UTC":
+            return utc_day(self._now(_dt.timezone.utc))
+        return tehran_day(self._now(TEHRAN_TZ))
 
     def _is_owner(self, user_id: int) -> bool:
         return bool(user_id) and self.store.is_owner(user_id)
 
+    def _is_registered_bot_owner(self, user_id: int) -> bool:
+        return bool(user_id) and self.store.is_registered_bot_owner(user_id)
+
+    def _is_admin(self, user_id: int) -> bool:
+        """مالک سراسری یا مالک ثبت‌شده (دارای دسترسی‌های عادی AI)."""
+        return self._is_owner(user_id) or self._is_registered_bot_owner(user_id)
+
     @staticmethod
     def _user_label(message, user_id: int, fallback_prefix: str) -> str:
-        """برچسب کاربر همان‌طور که در قالب خواسته شده:
-
-        * username دارد  → «@username»
-        * ندارد          → نام نمایشی
-        * هیچ‌کدام ندارد → fallback امن از اطلاعات واقعی کاربر («کاربر <user_id>»)
-        """
         sender = getattr(message, "sender", None)
         username = (getattr(sender, "username", None) or "").strip().lstrip("@")
         if username:
@@ -177,12 +172,11 @@ class GroupAI:
         if history is None:
             history = deque(maxlen=self.cfg.ai_history_pairs * 2)
             self._history[chat_id] = history
-            if len(self._history) > 500:          # جلوگیری از رشد نامحدود حافظه
+            if len(self._history) > 500:
                 self._history.popitem(last=False)
         history.append({"role": role, "content": content[: self.cfg.ai_max_input_chars]})
 
     def _build_messages(self, chat_id: int, user_text: str) -> list[dict]:
-        """system + تاریخچه‌ی محدود + پیام جدید (با طول محدود)."""
         messages = [{"role": "system", "content": brand.AI_SYSTEM_PROMPT}]
         history = self._history.get(chat_id)
         if history and self.cfg.ai_history_pairs > 0:
@@ -192,16 +186,21 @@ class GroupAI:
         )
         return messages
 
-    # ------------------------------------------------- دستورهای مدیریتی (مالک)
+    # ------------------------------------------------- دستورهای مدیریتی (مالک / مالک ثبت‌شده)
     async def handle_admin_command(self, client, event, command: str) -> bool:
-        """اجرای دستورهای ai online / ai of / ai list / ai list x (فقط مالک سراسری)."""
+        """اجرای دستورهای ai online / ai of / ai list / ai list x / ai L."""
         sender_id = int(getattr(event, "sender_id", 0) or 0)
         chat_id = int(getattr(event, "chat_id", 0) or 0)
 
-        # امنیت: فقط مالک سراسری — بر اساس user_id واقعی، نه username
-        if not self._is_owner(sender_id):
-            log.info("دستور AI «%s» از کاربر غیرمالک %s نادیده گرفته شد (chat=%s)",
+        # امنیت: فقط مالک سراسری یا مالک ثبت‌شده
+        if not self._is_admin(sender_id):
+            log.info("دستور AI «%s» از کاربر غیرمجاز %s نادیده گرفته شد (chat=%s)",
                      command, sender_id, chat_id)
+            return True
+
+        # بررسی انقضا
+        if self.store.is_expired(self._now()):
+            await self._reply(client, event, brand.BOT_EXPIRED_TEXT)
             return True
 
         if command == "online":
@@ -216,12 +215,24 @@ class GroupAI:
             await self._reply(client, event, brand.AI_DISABLED_TEXT)
             return True
 
+        if command == "l":
+            users = self.store.ai_allowed_users(chat_id)
+            if not users:
+                await self._reply(client, event, "هنوز کاربری برای هوش مصنوعی در این گروه مجاز نشده است.")
+                return True
+            lines = ["☰ لیست کاربران مجاز هوش مصنوعی:"]
+            for i, u in enumerate(users, 1):
+                label = u.username and f"@{u.username.lstrip('@')}" or u.display_name or f"کاربر {u.user_id}"
+                lines.append(f"{i} : {label}")
+            await self._reply(client, event, "\n".join(lines))
+            return True
+
         # ai list / ai list x → نیازمند Reply روی پیام همان کاربر
         reply_message = await self._get_reply_message(event)
         target_id = int(getattr(reply_message, "sender_id", 0) or 0) if reply_message else 0
 
         if not target_id:
-            log.info("دستور «%s» بدون Reply معتبر از مالک %s", command, sender_id)
+            log.info("دستور «%s» بدون Reply معتبر از کاربر %s", command, sender_id)
             await self._reply(client, event, brand.AI_NEED_REPLY_TEXT)
             return True
 
@@ -229,6 +240,16 @@ class GroupAI:
         target_username = getattr(getattr(reply_message, "sender", None), "username", None)
 
         if command == "list":
+            # بررسی سقف کاربران مجاز برای این گروه
+            limit = self.store.get_max_allowed_users(self.cfg.ai_max_allowed_users)
+            current_users = self.store.ai_allowed_users(chat_id)
+            is_already_allowed = any(u.user_id == target_id for u in current_users)
+
+            if not is_already_allowed and len(current_users) >= limit:
+                log.info("سقف اعضای مجاز گروه %s تکمیل است (%s عضو)", chat_id, limit)
+                await self._reply(client, event, brand.AI_MAX_USERS_REACHED_TEXT.format(limit=limit))
+                return True
+
             self.store.ai_allow_user(
                 chat_id, target_id, username=target_username, display_name=label
             )
@@ -239,7 +260,6 @@ class GroupAI:
         if command == "listx":
             removed = self.store.ai_revoke_user(chat_id, target_id)
             log.info("حذف مجوز کاربر %s در گروه %s → %s", target_id, chat_id, removed)
-            # طبق قالب خواسته‌شده، برای دستور «ai list x» فقط همین پیام ارسال می‌شود
             await self._reply(client, event, brand.AI_REVOKED_TEXT.format(user=label))
             return True
 
@@ -252,32 +272,32 @@ class GroupAI:
         sender_id = int(getattr(event, "sender_id", 0) or 0)
         text = (getattr(event, "raw_text", None) or "").strip()
 
+        # بررسی انقضا
+        if self.store.is_expired(self._now()):
+            await self._reply(client, event, brand.BOT_EXPIRED_TEXT)
+            return
+
         if not self.store.ai_is_enabled(chat_id):
             return
 
-        # پیام بدون متن (مدیا/استیکر/…) بدون حدس زدن نادیده گرفته می‌شود
         if not text:
             log.debug("پیام بدون متن در گروه %s برای AI نادیده گرفته شد", chat_id)
             return
 
-        # شرط مهم: AI فقط وقتی فعال می‌شود که کاربر روی «یکی از پیام‌های خود ربات»
-        # ریپلای کرده باشد. ریپلای روی پیام دیگر کاربران (هرچند ریپلای باشد) نباید
-        # نه پاسخ هوش مصنوعی بدهد و نه پیام عدم دسترسی.
         reply_msg = await self._get_reply_message(event)
         if reply_msg is None:
-            return  # اصلاً Reply نیست (نباید رخ دهد ولی guard)
+            return
 
-        # شناسهٔ خود ربات (me)
+        # بررسی اینکه ریپلای روی پیام خودِ ربات است
         my_id = None
         get_me = getattr(client, "get_me", None)
         if callable(get_me):
             try:
                 me = await get_me()
                 my_id = int(getattr(me, "id", 0) or 0)
-            except Exception:  # noqa: BLE001 — در محیط تست ممکن است get_me در دسترس/پاسخگو نباشد
+            except Exception:  # noqa: BLE001
                 my_id = None
 
-        # راهکار دوم: از ویژگی out روی پیام reply (اگر پیام reply خروجی/مال ما باشد)
         reply_is_mine = bool(getattr(reply_msg, "out", False))
         reply_sender_id = int(getattr(reply_msg, "sender_id", 0) or 0)
         if my_id and reply_sender_id and reply_sender_id != my_id and not reply_is_mine:
@@ -285,34 +305,28 @@ class GroupAI:
                       reply_sender_id, chat_id)
             return
         if (not reply_is_mine) and (not my_id):
-            # اگر نتوانستیم id خودمان را بفهمیم، فقط به out اعتماد می‌کنیم؛ این حالت
-            # عملاً در اجرای واقعی رخ نمی‌دهد (get_me در دسترس است).
             if reply_sender_id and reply_sender_id != sender_id and not reply_is_mine:
-                # نمی‌توان مطمئن بود؛ محافظه‌کارانه نادیده می‌گیریم
                 return
 
-        # مجوز: کاربر مجازِ همان گروه یا خود مالک سراسری
-        allowed = self.store.ai_is_allowed(chat_id, sender_id) or (
-            self.cfg.ai_owner_always_allowed and self._is_owner(sender_id)
+        # مجوز: کاربر مجاز، مالک سراسری، یا مالک ثبت‌شده
+        allowed = (
+            self.store.ai_is_allowed(chat_id, sender_id)
+            or (self.cfg.ai_owner_always_allowed and self._is_owner(sender_id))
+            or self._is_registered_bot_owner(sender_id)
         )
         if not allowed:
             log.info("کاربر غیرمجاز %s در گروه %s → پیام عدم دسترسی", sender_id, chat_id)
             await self._reply(client, event, brand.AI_DENIED_TEXT)
             return
 
-        # سهمیه‌ی روزانه (per-group و بر اساس روز UTC) — قبل از هر درخواست شبکه‌ای
-        # (فقط چک می‌کنیم؛ مصرف واقعی بعد از دریافت پاسخ موفق ثبت می‌شود تا
-        # خطاها و retryها سهمیه را هدر ندهند)
+        # سهمیه‌ی روزانه (per-group و بر اساس روز Asia/Tehran)
         day = self._day()
-        limit = int(self.cfg.ai_daily_quota)
+        limit = self.store.get_daily_quota(self.cfg.ai_daily_quota)
         if self.store.ai_used_quota(chat_id, day) >= limit:
             log.warning("سهمیه روزانه AI گروه %s تمام شده است (%s)", chat_id, day)
             await self._reply(client, event, brand.AI_QUOTA_TEXT)
             return
 
-        # تعیین peer مقصد (همان چت) — از همین resolve_peer رسمی sender استفاده می‌کنیم
-        # که SendMessageRequest هم از آن استفاده می‌کند تا typing فقط در همان چت فعال
-        # شود و اگر get_input_entity خطا بدهد، قبل از درخواست AI مشخص شود.
         try:
             peer = await resolve_peer(event)
         except Exception as exc:  # noqa: BLE001
@@ -320,11 +334,7 @@ class GroupAI:
             peer = None
 
         typing_indicator = _TypingIndicator(client, peer, log)
-        # از همین لحظه typing را فعال می‌کنیم و تضمین می‌کنیم در هر شرایطی
-        # (موفقیت / خطا / timeout / retry / خالی بودن پاسخ) متوقف شود.
         typing_indicator.start()
-        # یک شیفت به event loop می‌دهیم تا اولین SetTypingRequest پیش از شروع
-        # درخواست AI ارسال شود (واسطه‌ی تایمینگ در پاسخ‌های بسیار سریع).
         await asyncio.sleep(0)
         try:
             messages = self._build_messages(chat_id, text)
@@ -336,7 +346,7 @@ class GroupAI:
                 )
             except AIQuotaExceeded as exc:
                 log.warning("Cloudflare سهمیه را تمام‌شده اعلام کرد: %s", exc)
-                self.store.ai_exhaust_quota(chat_id, day, self.cfg.ai_daily_quota)
+                self.store.ai_exhaust_quota(chat_id, day, limit)
                 await self._reply(client, event, brand.AI_QUOTA_TEXT)
                 return
             except AIConfigError as exc:
@@ -348,16 +358,12 @@ class GroupAI:
                 await self._reply(client, event, brand.AI_ERROR_TEXT)
                 return
 
-            # پاسخ موفق: حالا یک واحد سهمیه مصرف می‌شود
-            # (اگر دقیقاً در این فاصله یک درخواست هم‌زمانِ دیگر سهمیه را پر کرده باشد،
-            #  ai_consume_quota خودداری می‌کند؛ پاسخ همین الان ساخته شده پس ارسال می‌شود
-            #  و درخواست بعدی سهمیه را خالی می‌بیند — فقظ شمارش اندکی ارفاق دارد که مطلوب است)
+            # فقط در صورت پاسخ موفقیت‌آمیز، سهمیه مصرف می‌شود (درخواست‌های ناموفق بالادستی سهمیه مصرف نمی‌کنند)
             self.store.ai_consume_quota(chat_id, day, limit)
 
             self._push_history(chat_id, "user", text)
             self._push_history(chat_id, "assistant", response.text)
 
-            # پاسخ مدل، در همان گروه و در پاسخ به همان پیام کاربر
             for chunk in brand.chunk_lines(response.text.split("\n"), self.cfg.max_message_chars):
                 report = await self.sender.send_text(
                     client,
@@ -369,18 +375,10 @@ class GroupAI:
                     log.error("ارسال پاسخ AI ناموفق بود: %s | %s",
                               report.error, report.attempts)
         finally:
-            # قطع/لغو وضعیت typing در هر حالت: موفقیت، خطا، یا حتی استثنای غافلگیرکننده
             await typing_indicator.stop()
-
 
     # ------------------------------------------------------------------ کمکی‌ها
     async def _reply(self, client, event, text: str) -> None:
-        """ارسال پیام سیستمی AI در پاسخ به همان پیام کاربر.
-
-        قالب این پیام‌ها **Bold** است و **نقل‌قول شیشه‌ای (Blockquote) ندارد**
-        (طبق درخواست صریح کاربر). زنجیره‌ی fallback: bold-only → متن ساده.
-        متن پیام دست‌نخورده می‌ماند.
-        """
         report = await self.sender.send_styled(
             client,
             await resolve_peer(event),
@@ -398,6 +396,6 @@ class GroupAI:
             return None
         try:
             return await getter()
-        except Exception as exc:  # noqa: BLE001 — اگر پیام مرجع در دسترس نبود
+        except Exception as exc:  # noqa: BLE001
             log.debug("get_reply_message ناموفق بود: %s", exc)
             return None

@@ -1,5 +1,5 @@
 """
-ارسال «پیام معرفی» با نقل‌قول شیشه‌ای (Quote) + Bold — از طریق API واقعی سروش پلاس.
+ارسال «پیام معرفی» و پیام‌های دارای فرمت با نقل‌قول شیشه‌ای (Quote) + Bold — از طریق API واقعی سروش پلاس.
 
 اینجا هیچ endpoint ساختگی‌ای وجود ندارد؛ همه‌چیز روی همان درخواست واقعی MTProto
 ساخته می‌شود که خودِ کلاینت رسمی سروش پلاس هم استفاده می‌کند:
@@ -13,12 +13,6 @@
     ۱) blockquote + bold   (نقل‌قول شیشه‌ای واقعی + متن‌های بولد)   ← پیش‌فرض
     ۲) bold                (اگر سرور entity نقل‌قول را نپذیرفت)
     ۳) متن ساده            (اگر entityها به‌هر دلیل رد شدند)
-
-و در حالت اختیاری "reply": اول «ریپلای + quote_text» (همان قابلیتِ
-«انتخاب متن → سه‌نقطه → نقل قول» در سروش پلاس) امتحان می‌شود و اگر سرور
-آن را نپذیرفت، به حالت blockquote برمی‌گردد.
-
-نتیجه‌ی هر تلاش لاگ می‌شود تا در عمل مشخص باشد کدام حالت واقعاً کار می‌کند.
 """
 
 from __future__ import annotations
@@ -43,7 +37,7 @@ async def resolve_peer(event):
             peer = await getter()
             if peer is not None:
                 return peer
-        except Exception:  # noqa: BLE001 — در بدترین حالت به chat_id برمی‌گردیم
+        except Exception:  # noqa: BLE001
             log.debug("get_input_chat ناموفق بود؛ از chat_id استفاده می‌شود.")
     return getattr(event, "chat_id", None)
 
@@ -58,7 +52,7 @@ class SendReport:
 
 
 def _extract_message_id(result: Any) -> Optional[int]:
-    """استخراج شناسه‌ی پیام ارسال‌شده از پاسخ سرور (به‌صورت best-effort)."""
+    """استخراج شناسه‌ی پیام ارسال‌شده از پاسخ سرور."""
     if result is None:
         return None
     if isinstance(result, types.UpdateShortSentMessage):
@@ -82,7 +76,7 @@ def _extract_message_id(result: Any) -> Optional[int]:
 
 
 class BrandSender:
-    """ارسال پیام معرفی با نقل‌قول شیشه‌ای و Bold."""
+    """ارسال پیام معرفی و پیام‌های قالب‌دار با نقل‌قول شیشه‌ای و Bold."""
 
     def __init__(self, cfg: Config):
         self.cfg = cfg
@@ -95,14 +89,6 @@ class BrandSender:
         reply_to_msg_id: Optional[int] = None,
         quote_from_msg_id: Optional[int] = None,
     ) -> SendReport:
-        """ارسال پیام معرفی به چت مشخص.
-
-        Args:
-            client: نمونه‌ی SoroushClient (یا هر شیئی با get_input_entity و __call__).
-            chat: شناسه/موجودیت چت مقصد (گروه).
-            reply_to_msg_id: اگر مقدار داشته باشد، پیام به‌صورت ریپلای معمولی ارسال می‌شود.
-            quote_from_msg_id: شناسه‌ی پیام مرجع برای حالت نقل‌قول واقعی (quote_text).
-        """
         peer = await self._resolve_peer(client, chat)
         attempts = self._build_plan(
             quote_from_msg_id=quote_from_msg_id, reply_to_msg_id=reply_to_msg_id
@@ -125,7 +111,7 @@ class BrandSender:
                 report.attempts.append({"mode": name, "ok": True})
                 log.info("پیام معرفی ارسال شد (حالت: %s)", name)
                 return report
-            except Exception as exc:  # noqa: BLE001 — هر خطای سرور باید fallback را فعال کند
+            except Exception as exc:  # noqa: BLE001
                 err = f"{type(exc).__name__}: {exc}"
                 report.attempts.append({"mode": name, "ok": False, "error": err})
                 report.error = err
@@ -134,16 +120,9 @@ class BrandSender:
         log.error("ارسال پیام معرفی در همه‌ی حالت‌ها ناموفق بود: %s", report.error)
         return report
 
-    # ------------------------------------------------------------------ helpers
     async def send_text(
         self, client, chat, text: str, *, reply_to_msg_id: Optional[int] = None
     ) -> SendReport:
-        """ارسال یک پیام متنی ساده (بدون entity).
-
-        برای پیام‌های سیستمی (مثل «تعداد اعضا» / «لیست اعضا» و پاسخ‌های هوش مصنوعی)
-        که قالب خاصی لازم ندارند. از همان درخواست واقعی `messages.sendMessage`
-        استفاده می‌کند و در صورت نیاز، پیام را به‌صورت Reply می‌فرستد.
-        """
         peer = await self._resolve_peer(client, chat)
         report = SendReport(ok=False, attempts=[])
         try:
@@ -176,15 +155,6 @@ class BrandSender:
         reply_to_msg_id: Optional[int] = None,
         quote: bool = True,
     ) -> SendReport:
-        """ارسال یک متن دلخواه با «قالب استاندارد پروژه»: Bold (و در حالت پیش‌فرض نقل‌قول شیشه‌ای).
-
-        زنجیره‌ی fallback:
-            * ``quote=True``  → blockquote+bold → bold-only → متن ساده
-            * ``quote=False`` → bold-only → متن ساده   (بدون هیچ Blockquote)
-
-        بنابراین اگر سرور سروش entity را نپذیرد، ارسال شکست نمی‌خورد.
-        با ``reply_to_msg_id`` پیام به‌صورت Reply روی همان پیام فرستاده می‌شود.
-        """
         peer = await self._resolve_peer(client, chat)
         bold_only = ("bold-only", brand.quote_bold_entities(text, quote=False, bold=True))
         plan = (
@@ -215,7 +185,7 @@ class BrandSender:
                 report.attempts.append({"mode": name, "ok": True})
                 log.info("پیام قالب‌دار ارسال شد (حالت: %s)", name)
                 return report
-            except Exception as exc:  # noqa: BLE001 — هر خطای سرور باید fallback را فعال کند
+            except Exception as exc:  # noqa: BLE001
                 err = f"{type(exc).__name__}: {exc}"
                 report.attempts.append({"mode": name, "ok": False, "error": err})
                 report.error = err
@@ -224,10 +194,61 @@ class BrandSender:
         log.error("ارسال پیام قالب‌دار در همه‌ی حالت‌ها ناموفق بود: %s", report.error)
         return report
 
+    async def send_entities(
+        self,
+        client,
+        chat,
+        text: str,
+        entities: list[object],
+        *,
+        reply_to_msg_id: Optional[int] = None,
+    ) -> SendReport:
+        """ارسال پیام با entityهای سفارشی به همراه زنجیره‌ی fallback کامل:
+
+        ۱) entityهای سفارشی کامل (شامل Blockquote + Bold)
+        ۲) فقط Bold (اگر سرور entityهای نقل‌قول را رد کرد)
+        ۳) متن ساده (بدون هیچ entity)
+        """
+        peer = await self._resolve_peer(client, chat)
+        bold_only_entities = [
+            e for e in entities if isinstance(e, types.MessageEntityBold)
+        ]
+        plan = [
+            ("custom-entities", entities),
+            ("bold-fallback", bold_only_entities),
+            ("plain", []),
+        ]
+        report = SendReport(ok=False, attempts=[])
+
+        for name, ent_list in plan:
+            try:
+                result = await client(
+                    functions.messages.SendMessageRequest(
+                        peer=peer,
+                        message=text,
+                        entities=ent_list or None,
+                        reply_to=self._plain_reply(reply_to_msg_id),
+                        no_webpage=not self.cfg.link_preview,
+                    )
+                )
+                report.ok = True
+                report.mode = name
+                report.message_id = _extract_message_id(result)
+                report.attempts.append({"mode": name, "ok": True})
+                log.info("پیام با entity ارسال شد (حالت: %s)", name)
+                return report
+            except Exception as exc:  # noqa: BLE001
+                err = f"{type(exc).__name__}: {exc}"
+                report.attempts.append({"mode": name, "ok": False, "error": err})
+                report.error = err
+                log.warning("تلاش «%s» ناموفق بود → %s", name, err)
+
+        log.error("ارسال پیام با entity در همه‌ی حالت‌ها ناموفق بود: %s", report.error)
+        return report
+
     async def send_text_chunked(
         self, client, chat, chunks: list[str]
     ) -> list[SendReport]:
-        """ارسال چند پیام پشت‌سرهم (برای لیست‌های بلندتر از سقف طول پیام)."""
         reports = []
         for chunk in chunks:
             reports.append(await self.send_text(client, chat, chunk))
@@ -240,14 +261,12 @@ class BrandSender:
         return await client.get_input_entity(chat)
 
     def _build_plan(self, *, quote_from_msg_id: Optional[int], reply_to_msg_id: Optional[int]):
-        """ساخت فهرست تلاش‌ها بر اساس تنظیمات."""
         plan: list[tuple[str, str, list, Any]] = []
         full = brand.FULL_TEXT
         body_only = brand.build_text(include_quote_line=False)
 
         quote_mode = (self.cfg.quote_mode or "entity").lower()
 
-        # --- حالت اختیاری: نقل‌قول واقعی با ریپلای + quote_text ---
         if quote_mode == "reply" and quote_from_msg_id:
             reply_to = types.InputReplyToMessage(
                 reply_to_msg_id=quote_from_msg_id,
@@ -265,7 +284,6 @@ class BrandSender:
             if not self.cfg.quote_reply_fallback_to_entity:
                 return plan
 
-        # --- نقل‌قول شیشه‌ای به‌صورت entity + متن‌های Bold ---
         if quote_mode in ("entity", "reply"):
             plan.append(
                 (
@@ -276,7 +294,6 @@ class BrandSender:
                 )
             )
 
-        # --- فقط Bold ---
         plan.append(
             (
                 "bold-only",
@@ -286,7 +303,6 @@ class BrandSender:
             )
         )
 
-        # --- متن ساده ---
         plan.append(("plain", full, [], self._plain_reply(reply_to_msg_id)))
         return plan
 

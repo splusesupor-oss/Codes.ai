@@ -33,7 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import brand  # noqa: E402
 from ai_client import AIConfigError, AIError, AIQuotaExceeded  # noqa: E402
-from ai_service import GroupAI, utc_day  # noqa: E402
+from ai_service import GroupAI, utc_day, tehran_day  # noqa: E402
 from config import Config  # noqa: E402
 from core import BotCore  # noqa: E402
 from sender import BrandSender  # noqa: E402
@@ -430,7 +430,7 @@ class TestQuota(AITestCase):
         run(self.send("سلام", user_id=USER_1, reply_to=self.bot_reply()))
 
         self.assertEqual(self.texts(), [brand.AI_QUOTA_TEXT])
-        self.assertEqual(self.store.ai_usage(GROUP_A, utc_day()), self.cfg.ai_daily_quota)
+        self.assertEqual(self.store.ai_usage(GROUP_A, tehran_day()), self.cfg.ai_daily_quota)
 
         self.client.clear_requests()
         run(self.send("سلام دوباره", user_id=USER_1, reply_to=self.bot_reply()))
@@ -450,7 +450,7 @@ class TestQuota(AITestCase):
         sent = self.ai_client.calls[0]
         user_message = [m for m in sent if m["role"] == "user"][-1]
         self.assertLessEqual(len(user_message["content"]), self.cfg.ai_max_input_chars)
-        self.assertEqual(self.store.ai_usage(GROUP_A, utc_day()), 1)
+        self.assertEqual(self.store.ai_usage(GROUP_A, tehran_day()), 1)
 
     def test_15b_history_is_bounded(self):
         for i in range(6):
@@ -472,7 +472,7 @@ class TestDailyQuotaValue(AITestCase):
         self.assertEqual(Config.from_env().ai_daily_quota, 5000)
 
     def test_group_can_use_exactly_5000_requests_in_a_day(self):
-        day = utc_day()
+        day = tehran_day()
         granted = 0
         while self.store.ai_consume_quota(GROUP_A, day, self.cfg.ai_daily_quota):
             granted += 1
@@ -486,7 +486,7 @@ class TestDailyQuotaValue(AITestCase):
         self.assertEqual(self.store.ai_usage(GROUP_A, day), 5000)
 
     def test_5000_quota_is_per_group_and_per_day(self):
-        day_a, day_b = utc_day(), "2026-10-09"
+        day_a, day_b = tehran_day(), "2026-10-10"
         for _ in range(5000):
             self.assertTrue(self.store.ai_consume_quota(GROUP_A, day_a, 5000))
         self.assertFalse(self.store.ai_consume_quota(GROUP_A, day_a, 5000))   # روز A تمام است
@@ -507,7 +507,7 @@ class TestDailyQuotaValue(AITestCase):
             await self.core.on_new_message(self.client, event)
 
         # پر کردن سهمیه‌ی امروز با مصرف مستقیم (سریع‌تر از ۵۰۰۰ درخواست شبکه‌ای)
-        day = utc_day()
+        day = tehran_day()
         for _ in range(5000):
             self.store.ai_consume_quota(GROUP_A, day, 5000)
 
@@ -775,7 +775,7 @@ class TestPerGroupIsolation(AITestCase):
         run(self.send("الف", user_id=USER_1, chat_id=GROUP_A, reply_to=self.bot_reply()))
         run(self.send("ب", user_id=USER_1, chat_id=GROUP_B, reply_to=self.bot_reply()))
 
-        day = utc_day()
+        day = tehran_day()
         self.assertEqual(self.store.ai_usage(GROUP_A, day), 1)
         self.assertEqual(self.store.ai_usage(GROUP_B, day), 1)
 
@@ -827,7 +827,7 @@ class TestPersistence(AITestCase):
         try:
             self.assertTrue(store2.ai_is_enabled(GROUP_A))
             self.assertTrue(store2.ai_is_allowed(GROUP_A, USER_1))
-            self.assertEqual(store2.ai_usage(GROUP_A, utc_day()), 1)
+            self.assertEqual(store2.ai_usage(GROUP_A, tehran_day()), 1)
             self.assertFalse(store2.ai_is_enabled(GROUP_B))
 
             ai_client2 = FakeAI(reply="پاسخ بعد از ری‌استارت")

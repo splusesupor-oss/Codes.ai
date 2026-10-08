@@ -1,67 +1,55 @@
 """
-منطق ربات: دو دستور گروهی + یک رفتار خودکار در پیام خصوصی.
+منطق ربات: دستورات گروهی، مدیریت هوش مصنوعی، فعال‌سازی گروه و رفتار چت خصوصی.
 
-  ۱) «ai cod»  → اولین کاربری که این دستور را در هر گروهی بفرستد، برای همیشه
-                 Global Owner می‌شود؛ هیچ کاربر دیگری در هیچ گروهی نمی‌تواند مالک شود.
-                 بعد از ثبت موفق، پیام معرفی (فعال‌سازی) ارسال می‌شود.
-                 (فقط در گروه — در پیام خصوصی هرگز مالک ثبت نمی‌شود)
-
-  ۲) «کدرز»    → هر کاربری در هر گروهی این را بفرستد، پیام معرفی با همان قالب
-                 (نقل‌قول شیشه‌ای + Bold + لینک دست‌نخورده) ارسال می‌شود.
-
-  ۳) پیام خصوصی (PV) → هر پیام ورودی در چت خصوصی — بدون نیاز به هیچ دستوری و
-                 فارغ از متن پیام — پاسخِ همان پیام معرفی را برای همان کاربر می‌گیرد.
-                 تشخیص PV با API واقعی کتابخانه انجام می‌شود: `event.is_private`
-                 که در `splusthon/tl/custom/chatgetter.py` معادل
-                 `isinstance(_chat_peer, types.PeerUser)` است.
-
-نکته‌ی مهم: `groups_only` فقط روی «دستورها» اثر دارد؛ مسیر پیام خصوصی از آن مستقل است.
-
-این ماژول هیچ چیزی از شبکه را مستقیم صدا نمی‌زند؛ فقط از `client` و `event`
-استفاده می‌کند، بنابراین با یک کلاینت/ایونت جعلی هم کاملاً قابل تست است.
+  ۱) «ai cod»  → اولین کاربر مالک سراسری (Global Owner) می‌شود؛ ارسال‌های بعدی تاگل روشن/خاموش.
+  ۲) «Tery ai» (با Reply) → ثبت مالک ربات (Registered Bot Owner) توسط مالک سراسری.
+  ۳) «N پیام» / «N عضو» / «N day» → تنظیمات سهمیه، سقف اعضا و انقضا فقط توسط مالک سراسری.
+  ۴) «ai x cod» → فعال‌سازی ربات در گروه + ارسال پیام اعلان با مشخصات گروه و مدیران.
+  ۵) «ai online» / «ai of» → روشن/خاموش کردن هوش مصنوعی گروه (مالک سراسری یا مالک ثبت‌شده).
+  ۶) «ai list» / «ai list x» / «ai L» → مدیریت کاربران مجاز هوش مصنوعی در هر گروه.
+  ۷) «راهنما» → راهنمای فرمت‌دار هوش مصنوعی.
+  ۸) «ai plun» → نمایش سهمیه باقیمانده روزانه گروه.
+  ۹) «ai» → پاسخ «جانم 👾».
+  ۱۰) پیام خصوصی (PV) → ثبت آمار، دستورات مدیریتی مالک، معرفی یک‌بار و منوی ۶ گزینه‌ای.
 """
 
 from __future__ import annotations
 
+import datetime as _dt
 import logging
 import re
 import unicodedata
+import zoneinfo
 from typing import Optional
 
 import brand
 from ai_service import GroupAI
-from brand import chunk_lines          # ابزار مشترک تکه‌تکه‌کردن متن (در brand)
+from brand import chunk_lines
 from config import Config
 from sender import BrandSender, SendReport
+from splusthon import types
 from storage import OwnerStore
 
 log = logging.getLogger("acod.core")
 
-_ZWNJ = "\u200c"          # نیم‌فاصله
+TEHRAN_TZ = zoneinfo.ZoneInfo("Asia/Tehran")
+_ZWNJ = "\u200c"
 _ARABIC_PAIRS = str.maketrans({"ي": "ی", "ك": "ک", "ۀ": "ه", "أ": "ا", "إ": "ا"})
+PERSIAN_DIGITS_TABLE = str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789")
 
 
 def _base_clean(text: str) -> str:
-    """یکسان‌سازی حروف و فاصله‌ها (بدون تصمیم‌گیری درباره‌ی نیم‌فاصله)."""
     text = unicodedata.normalize("NFKC", text).translate(_ARABIC_PAIRS)
     return text.strip().lower()
 
 
 def normalize_text(text: str) -> str:
-    """نرمال‌سازی متن برای مقایسه‌ی منصفانه‌ی دستور.
-
-    * نیم‌فاصله حذف می‌شود («کدرز» == «کدرز»)
-    * فاصله‌های تکراری یکی می‌شوند و ابتدا/انتهای متن trim می‌شود
-    * حروف عربی/فارسی هم‌شکل یکسان‌سازی می‌شوند («كدرز» == «کدرز»)
-    * حروف لاتین کوچک می‌شوند («AI COD» == «ai cod»)
-    """
     if not text:
         return ""
     return re.sub(r"\s+", " ", _base_clean(text).replace(_ZWNJ, "")).strip()
 
 
 def _normalization_variants(text: str) -> set[str]:
-    """نیم‌فاصله هم «حذف» و هم «فاصله» در نظر گرفته می‌شود تا هر دو حالت بگیرد."""
     base = _base_clean(text)
     return {
         re.sub(r"\s+", " ", base.replace(_ZWNJ, "")).strip(),
@@ -69,8 +57,79 @@ def _normalization_variants(text: str) -> set[str]:
     }
 
 
+def parse_persian_int(text: str) -> Optional[int]:
+    """تبدیل اعداد انگلیسی/فارسی به عدد صحیح معتبر (> 0 و <= 1,000,000)."""
+    cleaned = text.strip().translate(PERSIAN_DIGITS_TABLE)
+    if cleaned.isdigit():
+        val = int(cleaned)
+        if 0 < val <= 1_000_000:
+            return val
+    return None
+
+
+def match_global_config_command(text: str) -> Optional[tuple[str, int]]:
+    """تشخیص دستورات تنظیم سهمیه، سقف اعضا و انقضا:
+
+    * «N پیام» / «N پیام»  → ('quota', N)
+    * «N عضو»  / «N عضو»   → ('max_users', N)
+    * «N day» / «N روز»    → ('expire_days', N)
+    """
+    if not text or not text.strip():
+        return None
+    raw = normalize_text(text)
+
+    m_quota = re.match(r"^(\d+|[۰-۹]+)\s*پیام$", raw)
+    if m_quota:
+        val = parse_persian_int(m_quota.group(1))
+        if val is not None:
+            return ("quota", val)
+
+    m_users = re.match(r"^(\d+|[۰-۹]+)\s*عضو$", raw)
+    if m_users:
+        val = parse_persian_int(m_users.group(1))
+        if val is not None:
+            return ("max_users", val)
+
+    m_day = re.match(r"^(\d+|[۰-۹]+)\s*(?:day|روز)$", raw)
+    if m_day:
+        val = parse_persian_int(m_day.group(1))
+        if val is not None:
+            return ("expire_days", val)
+
+    return None
+
+
+def is_tery_ai_command(text: str) -> bool:
+    if not text:
+        return False
+    return normalize_text(text) == "tery ai"
+
+
+def is_ai_xcod_command(text: str) -> bool:
+    if not text:
+        return False
+    return normalize_text(text) == "ai x cod"
+
+
+def is_help_command(text: str) -> bool:
+    if not text:
+        return False
+    return normalize_text(text) == "راهنما"
+
+
+def is_plun_command(text: str) -> bool:
+    if not text:
+        return False
+    return normalize_text(text) == "ai plun"
+
+
+def is_ai_single_command(text: str) -> bool:
+    if not text:
+        return False
+    return normalize_text(text) == "ai"
+
+
 def owner_command_variants(cfg: Config) -> set:
-    """همه‌ی املاهای پذیرفته‌شده‌ی دستور مالک: «ai cod» و «ai code» (قابل تغییر با env)."""
     commands = (cfg.owner_command,) + tuple(cfg.owner_command_aliases)
     variants = set()
     for command in commands:
@@ -79,7 +138,6 @@ def owner_command_variants(cfg: Config) -> set:
 
 
 def match_command(text: str, cfg: Config) -> Optional[str]:
-    """تشخیص دستور: 'owner' برای «ai cod»/«ai code» و 'kodrez' برای «کدرز»."""
     if not text or not text.strip():
         return None
     given = _normalization_variants(text)
@@ -91,7 +149,6 @@ def match_command(text: str, cfg: Config) -> Optional[str]:
 
 
 def match_pv_admin_command(text: str, cfg: Config) -> Optional[str]:
-    """تشخیص دستورهای مدیریتی PV: 'count' برای «تعداد اعضا» و 'list' برای «لیست اعضا»."""
     if not text or not text.strip():
         return None
     given = _normalization_variants(text)
@@ -103,30 +160,23 @@ def match_pv_admin_command(text: str, cfg: Config) -> Optional[str]:
 
 
 def match_ai_command(text: str, cfg: Config) -> Optional[str]:
-    """تشخیص دستورهای AI گروه: online | of | list | listx.
-
-    «ai list x» قبل از «ai list» بررسی می‌شود تا اشتباه match نشود.
-    """
     if not text or not text.strip():
         return None
-    given = _normalization_variants(text)
-    if given & _normalization_variants(cfg.ai_listx_command):
+    norm = normalize_text(text)
+    if norm == "ai list x":
         return "listx"
-    if given & _normalization_variants(cfg.ai_list_command):
+    if norm == "ai list":
         return "list"
-    if given & _normalization_variants(cfg.ai_online_command):
+    if norm == "ai online":
         return "online"
-    if given & _normalization_variants(cfg.ai_of_command):
+    if norm == "ai of":
         return "of"
+    if norm == "ai l":
+        return "l"
     return None
 
 
 def match_menu_option(text: str) -> Optional[str]:
-    """تشخیص یکی از ۶ گزینه‌ی منوی PV.
-
-    متن گزینه‌ها در `brand.MENU_OPTIONS` است و مقایسه با همان نرمال‌سازی
-    دستورهای دیگر انجام می‌شود (فاصله‌های اضافی، نیم‌فاصله، حروف عربی/فارسی).
-    """
     if not text or not text.strip():
         return None
     given = _normalization_variants(text)
@@ -137,10 +187,6 @@ def match_menu_option(text: str) -> Optional[str]:
 
 
 def pv_user_label(user, unknown_name: str = "کاربر بدون نام") -> str:
-    """نمایش کاربر PV: اگر username دارد «@username» وگرنه نام نمایشی.
-
-    اگر هیچ‌کدام نبود، نام امن «کاربر بدون نام» برگردانده می‌شود.
-    """
     username = (getattr(user, "username", None) or "").strip().lstrip("@")
     if username:
         return f"@{username}"
@@ -149,15 +195,27 @@ def pv_user_label(user, unknown_name: str = "کاربر بدون نام") -> str
 
 
 def format_pv_user_list(users, unknown_name: str = "کاربر بدون نام") -> list[str]:
-    """ساخت خطوط فهرست: «1 : @osine» به ترتیب ثبت."""
     return [
         f"{index} : {pv_user_label(user, unknown_name)}"
         for index, user in enumerate(users, start=1)
     ]
 
 
+def _format_user_display(user) -> str:
+    username = (getattr(user, "username", None) or "").strip().lstrip("@")
+    if username:
+        return f"@{username}"
+    first = (getattr(user, "first_name", "") or "").strip()
+    last = (getattr(user, "last_name", "") or "").strip()
+    full = f"{first} {last}".strip()
+    if full:
+        return full
+    u_id = getattr(user, "id", None)
+    return f"کاربر {u_id}" if u_id else "کاربر بدون نام"
+
+
 class BotCore:
-    """هسته‌ی ربات (مستقل از شبکه و کاملاً تست‌پذیر)."""
+    """هسته‌ی ربات."""
 
     def __init__(
         self,
@@ -165,64 +223,160 @@ class BotCore:
         store: OwnerStore,
         sender: Optional[BrandSender] = None,
         ai: Optional[GroupAI] = None,
+        *,
+        now_provider=None,
     ):
         self.cfg = cfg
         self.store = store
         self.sender = sender or BrandSender(cfg)
-        # سرویس هوش مصنوعی (فقط گروه‌ها) — در تست‌ها با یک کلاینت جعلی تزریق می‌شود
         self.ai = ai or GroupAI(cfg, store, self.sender)
+        self._now_provider = now_provider
+
+    def _now(self, tz=None):
+        if self._now_provider is not None:
+            return self._now_provider(tz) if tz else self._now_provider()
+        if hasattr(self.ai, "_now") and callable(self.ai._now):
+            return self.ai._now(tz) if tz else self.ai._now()
+        return _dt.datetime.now(tz) if tz else _dt.datetime.now()
 
     # ------------------------------------------------------------------ entry
     async def on_new_message(self, client, event) -> None:
-        """هندلر اصلی — به events.NewMessage وصل می‌شود."""
-        # پیام‌های خودمان (خروجی) نباید پردازش شوند؛ وگرنه حلقه‌ی بی‌پایان می‌شود.
-        # این بررسی، پاسخ خودکار PV ربات را هم از پردازش مجدد محافظت می‌کند.
         if getattr(event, "out", False):
             return
 
-        # --- مسیر ۱: پیام خصوصی (PV) → ثبت کاربر + پاسخ خودکار معرفی/آمار ---
-        # تشخیص با API واقعی SPlusthon: `is_private` (↔ PeerUser بودن چت).
         if getattr(event, "is_private", None) is True:
             await self._handle_private(client, event)
             return
 
-        # --- مسیر ۲: گروه‌ها → دستورها و هوش مصنوعی ---
         text = getattr(event, "raw_text", None) or ""
         is_group = bool(getattr(event, "is_group", False))
         if not text.strip():
             return
 
-        # (قفلِ سراسری) دو حالت ربات را «قفل» می‌کند:
-        #   ۱) هنوز هیچ‌کس با «ai cod» مالک نشده است (پیش‌فرض خاموش)؛
-        #   ۲) مالک با «ai cod» دوباره ربات را خاموش کرده (global_suspended=True).
-        # در هر دو حالت فقط خود دستور «ai cod» عبور می‌کند تا مالک بتواند:
-        #   - اولین‌بار claim کند (حالت ۱)، یا
-        #   - دوباره ربات را روشن کند (حالت ۲).
-        # همه‌ی پیام‌های دیگر بی‌درنگ نادیده گرفته می‌شوند و هیچ پاسخی فرستاده
-        # نمی‌شود (ربات کاملاً بی‌صدا است).
-        if not self.store.is_active():
+        sender_id = int(getattr(event, "sender_id", 0) or 0)
+        norm_text = normalize_text(text)
+        current_time = self._now()
+
+        # -------------------------------------------------------------
+        # الف) بررسی انقضای سرویس ربات
+        # -------------------------------------------------------------
+        if self.store.is_expired(current_time):
+            if self.store.is_owner(sender_id):
+                config_cmd = match_global_config_command(text)
+                if config_cmd and config_cmd[0] == "expire_days":
+                    await self._handle_expire_config(client, event, config_cmd[1])
+                    return
+                if match_command(text, self.cfg) == "owner":
+                    await self._handle_owner_command(client, event)
+                    return
+            if is_ai_xcod_command(norm_text) or getattr(event, "is_reply", False):
+                await self.sender.send_styled(
+                    client,
+                    await self._peer_of(event),
+                    brand.BOT_EXPIRED_TEXT,
+                    reply_to_msg_id=getattr(event, "id", None),
+                    quote=False,
+                )
+            return
+
+        # -------------------------------------------------------------
+        # ب) بررسی فعال بودن سراسری ربات
+        # -------------------------------------------------------------
+        if not self.store.is_active(current_time):
             command = match_command(text, self.cfg)
             if command == "owner":
                 await self._handle_owner_command(client, event)
             else:
-                log.debug("ربات خاموش است؛ پیام گروهی «%s» نادیده گرفته شد.",
-                          text[:40])
+                log.debug("ربات خاموش است؛ پیام گروهی «%s» نادیده گرفته شد.", text[:40])
             return
 
-        # (۲-الف) دستورهای AI گروه: ai online / ai of / ai list / ai list x
-        #         (فقط گروه و فقط مالک سراسری — منطق و بررسی مالک در GroupAI)
+        # -------------------------------------------------------------
+        # ج) دستورات پیکربندی مالک سراسری: «N پیام» / «N عضو» / «N day»
+        # -------------------------------------------------------------
+        config_cmd = match_global_config_command(text)
+        if config_cmd:
+            if self.store.is_owner(sender_id):
+                cmd_type, val = config_cmd
+                if cmd_type == "quota":
+                    await self._handle_quota_config(client, event, val)
+                    return
+                if cmd_type == "max_users":
+                    await self._handle_max_users_config(client, event, val)
+                    return
+                if cmd_type == "expire_days":
+                    await self._handle_expire_config(client, event, val)
+                    return
+            else:
+                log.info("کاربر عادی %s تلاش کرد مقادیر پیکربندی را تغییر دهد؛ نادیده گرفته شد.", sender_id)
+
+        # -------------------------------------------------------------
+        # د) دستور «Tery ai» — ثبت مالک ربات (فقط مالک سراسری)
+        # -------------------------------------------------------------
+        if is_tery_ai_command(norm_text):
+            if self.store.is_owner(sender_id):
+                await self._handle_tery_ai(client, event)
+            else:
+                log.info("دستور Tery ai از غیرمالک سراسری %s رد شد", sender_id)
+            return
+
+        # -------------------------------------------------------------
+        # هـ) دستور «ai x cod» — فعال‌سازی گروه (فقط مالک سراسری)
+        # -------------------------------------------------------------
+        if is_ai_xcod_command(norm_text):
+            if self.store.is_owner(sender_id):
+                await self._handle_ai_xcod(client, event)
+            else:
+                log.info("دستور ai x cod از غیرمالک سراسری %s رد شد", sender_id)
+            return
+
+        # -------------------------------------------------------------
+        # و) دستور «راهنما» — پیام راهنمای فارسی
+        # -------------------------------------------------------------
+        if is_help_command(norm_text):
+            help_text, entities = brand.build_help_message()
+            await self.sender.send_entities(
+                client,
+                await self._peer_of(event),
+                help_text,
+                entities,
+                reply_to_msg_id=getattr(event, "id", None),
+            )
+            return
+
+        # -------------------------------------------------------------
+        # ز) دستور «ai plun» — باقیمانده سهمیه روزانه گروه
+        # -------------------------------------------------------------
+        if is_plun_command(norm_text):
+            await self._handle_plun(client, event)
+            return
+
+        # -------------------------------------------------------------
+        # ح) دستور «ai» — صدا زدن ربات
+        # -------------------------------------------------------------
+        if is_ai_single_command(norm_text):
+            await self.sender.send_text(
+                client,
+                await self._peer_of(event),
+                brand.AI_CALL_RESPONSE,
+                reply_to_msg_id=getattr(event, "id", None),
+            )
+            return
+
+        # -------------------------------------------------------------
+        # ط) دستورهای مدیریت هوش مصنوعی: ai online / ai of / ai list / ai list x / ai L
+        # -------------------------------------------------------------
         ai_command = match_ai_command(text, self.cfg)
         if ai_command is not None:
             if is_group:
                 await self.ai.handle_admin_command(client, event, ai_command)
             return
 
-        # (۲-ب) دستورهای فعلی ربات (بدون تغییر)
+        # -------------------------------------------------------------
+        # ی) دستورات سنتی ربات: ai cod و کدرز
+        # -------------------------------------------------------------
         command = match_command(text, self.cfg)
         if command is not None:
             if self.cfg.groups_only and not is_group:
-                log.debug("دستور «%s» در چت غیرگروهی نادیده گرفته شد (chat_id=%s)",
-                          text, getattr(event, "chat_id", None))
                 return
             if command == "owner":
                 await self._handle_owner_command(client, event)
@@ -230,27 +384,182 @@ class BotCore:
                 await self._handle_kodrez(client, event)
             return
 
-        # (۲-ج) گفت‌وگو با هوش مصنوعی: فقط Reply در گروهی که AI آن روشن است
+        # -------------------------------------------------------------
+        # ک) گفت‌وگو با هوش مصنوعی (فقط Reply در گروه فعال)
+        # -------------------------------------------------------------
         if is_group and getattr(event, "is_reply", False):
             await self.ai.handle_chat(client, event)
 
+    # ------------------------------------------------------- دستورات پیکربندی مالک
+    async def _handle_quota_config(self, client, event, quota: int) -> None:
+        self.store.set_daily_quota(quota)
+        msg = f"سهمیه روزانه هوش مصنوعی هر گروه به {quota} پیام تنظیم شد."
+        log.info("سهمیه روزانه به %s پیام تغییر یافت", quota)
+        await self.sender.send_styled(
+            client, await self._peer_of(event), msg, quote=False,
+            reply_to_msg_id=getattr(event, "id", None),
+        )
+
+    async def _handle_max_users_config(self, client, event, max_users: int) -> None:
+        self.store.set_max_allowed_users(max_users)
+        msg = f"سقف اعضای مجاز هوش مصنوعی هر گروه به {max_users} عضو تنظیم شد."
+        log.info("سقف اعضای مجاز به %s عضو تغییر یافت", max_users)
+        await self.sender.send_styled(
+            client, await self._peer_of(event), msg, quote=False,
+            reply_to_msg_id=getattr(event, "id", None),
+        )
+
+    async def _handle_expire_config(self, client, event, days: int) -> None:
+        expires_at = self._now(TEHRAN_TZ) + _dt.timedelta(days=days)
+        self.store.set_expiration(expires_at)
+        msg = f"اعتبار ربات برای {days} روز تنظیم شد."
+        log.info("انقضای ربات به %s روز دیگر (%s) تنظیم شد", days, expires_at.isoformat())
+        await self.sender.send_styled(
+            client, await self._peer_of(event), msg, quote=False,
+            reply_to_msg_id=getattr(event, "id", None),
+        )
+
+    # ------------------------------------------------------- ثبت مالک ربات (Tery ai)
+    async def _handle_tery_ai(self, client, event) -> None:
+        reply_message = await self.ai._get_reply_message(event)
+        target_id = int(getattr(reply_message, "sender_id", 0) or 0) if reply_message else 0
+
+        if not target_id:
+            await self.sender.send_styled(
+                client,
+                await self._peer_of(event),
+                brand.AI_NEED_REPLY_REG_OWNER_TEXT,
+                quote=False,
+                reply_to_msg_id=getattr(event, "id", None),
+            )
+            return
+
+        label = self.ai._user_label(reply_message, target_id, brand.AI_USER_FALLBACK_PREFIX)
+        target_username = getattr(getattr(reply_message, "sender", None), "username", None)
+        sender_id = int(getattr(event, "sender_id", 0) or 0)
+
+        self.store.set_registered_bot_owner(
+            target_id,
+            username=target_username,
+            display_name=label,
+            registered_by=sender_id,
+        )
+        log.info("مالک ثبت‌شده ثبت شد: user_id=%s توسط %s", target_id, sender_id)
+        await self.sender.send_styled(
+            client,
+            await self._peer_of(event),
+            brand.AI_REGISTERED_OWNER_TEXT.format(user=label),
+            quote=False,
+            reply_to_msg_id=getattr(event, "id", None),
+        )
+
+    # ------------------------------------------------------- فعال‌سازی گروه (ai x cod)
+    async def _handle_ai_xcod(self, client, event) -> None:
+        chat_id = int(getattr(event, "chat_id", 0) or 0)
+        sender_id = int(getattr(event, "sender_id", 0) or 0)
+
+        self.store.activate_group(chat_id, sender_id)
+        self.store.ai_set_enabled(chat_id, True)
+
+        group_name, owner_label, admins = await self._fetch_group_metadata(client, event)
+        text, entities = brand.build_announcement_message(group_name, owner_label, admins)
+
+        log.info("گروه %s فعال شد (نام: %s، مالک: %s، مدیران: %s)", chat_id, group_name, owner_label, len(admins))
+        report = await self.sender.send_entities(
+            client,
+            await self._peer_of(event),
+            text,
+            entities,
+            reply_to_msg_id=getattr(event, "id", None),
+        )
+        self._log_report(report)
+
+    async def _fetch_group_metadata(self, client, event) -> tuple[str, str, list[str]]:
+        group_name = "گروه"
+        owner_label = "مالک یافت نشد"
+        admin_labels: list[str] = []
+        seen_admin_ids = set()
+
+        try:
+            chat = getattr(event, "chat", None)
+            if not chat and hasattr(event, "get_chat"):
+                chat = await event.get_chat()
+            if chat and getattr(chat, "title", None):
+                group_name = chat.title
+        except Exception as e:
+            log.debug("خطا در دریافت نام گروه: %s", e)
+
+        chat_id = getattr(event, "chat_id", None)
+        try:
+            participants = None
+            if hasattr(client, "get_participants"):
+                try:
+                    participants = await client.get_participants(
+                        chat_id, filter=types.ChannelParticipantsAdmins()
+                    )
+                except Exception:
+                    participants = await client.get_participants(chat_id)
+            elif hasattr(client, "iter_participants"):
+                participants = [p async for p in client.iter_participants(chat_id)]
+
+            if participants:
+                creator_found = False
+                for u in participants:
+                    u_id = getattr(u, "id", None)
+                    p_info = getattr(u, "participant", None)
+                    is_creator = isinstance(
+                        p_info, (types.ChannelParticipantCreator, types.ChatParticipantCreator)
+                    ) or getattr(p_info, "is_creator", False)
+
+                    u_label = _format_user_display(u)
+
+                    if is_creator and not creator_found:
+                        owner_label = u_label
+                        creator_found = True
+                        if u_id:
+                            seen_admin_ids.add(u_id)
+                    else:
+                        is_admin = isinstance(
+                            p_info, (types.ChannelParticipantAdmin, types.ChatParticipantAdmin)
+                        ) or getattr(p_info, "is_admin", False)
+                        if is_admin and (u_id is None or u_id not in seen_admin_ids):
+                            admin_labels.append(u_label)
+                            if u_id:
+                                seen_admin_ids.add(u_id)
+        except Exception as e:
+            log.debug("خطا در دریافت لیست مدیران گروه: %s", e)
+
+        return group_name, owner_label, admin_labels
+
+    # ------------------------------------------------------- سهمیه گروه (ai plun)
+    async def _handle_plun(self, client, event) -> None:
+        chat_id = int(getattr(event, "chat_id", 0) or 0)
+        day = self.ai._day()
+        limit = self.store.get_daily_quota(self.cfg.ai_daily_quota)
+        used = self.store.ai_used_quota(chat_id, day)
+        remaining = max(0, limit - used)
+
+        msg = (
+            "📊 سهمیه هوش مصنوعی این گروه:\n"
+            f"• کل سهمیه روزانه: {limit}\n"
+            f"• مصرف شده: {used}\n"
+            f"• باقی‌مانده: {remaining}"
+        )
+        await self.sender.send_styled(
+            client,
+            await self._peer_of(event),
+            msg,
+            quote=False,
+            reply_to_msg_id=getattr(event, "id", None),
+        )
+
     # ------------------------------------------------------- پیام خصوصی (PV)
     async def _handle_private(self, client, event) -> None:
-        """مسیر پیام خصوصی:
-
-        ۱) ثبت یک‌بارِ کاربر PV در storage دائمی (کلید = user_id واقعی)
-        ۲) «ai cod» از مالک در PV هم ربات را خاموش/روشن می‌کند (اما هرگز claim نمی‌کند)
-        ۳) دستورهای مدیریتی مالک سراسری («تعداد اعضا» / «لیست اعضا») — فقط وقتی روشن
-        ۴) «اولین پیام» همان کاربر → معرفی (یک‌بار) + منوی انتخاب (یک‌بار)
-        ۵) پیام‌های بعدی: اگر یکی از ۶ گزینه‌ی منو بود → فقط پاسخ همان گزینه
-        ۶) متن دیگر → پاسخ جدیدی ساخته نمی‌شود و معرفی/منو هم تکرار نمی‌شوند
-        """
         sender_id = int(getattr(event, "sender_id", 0) or 0)
         text = getattr(event, "raw_text", None) or ""
+        norm_text = normalize_text(text)
+        current_time = self._now()
 
-        # (۱) ثبت کاربر PV — هر کاربر فقط یک‌بار (کلید: user_id؛ تغییر username
-        #     کاربر را «جدید» نمی‌کند). مقدار بازگشتی «اولین پیام» بودن را می‌گوید و
-        #     چون در SQLite دائمی ذخیره می‌شود، بعد از restart هم از بین نمی‌رود.
         is_first_message = False
         if sender_id:
             is_first_message = self.store.register_pv_user(
@@ -262,59 +571,65 @@ class BotCore:
                 log.info("کاربر جدید PV ثبت شد: user_id=%s (تعداد: %s)",
                          sender_id, self.store.count_pv_users())
 
-        # (۲) «ai cod» از مالک در PV — تاگل خاموش/روشن (ولی هرگز claim نمی‌کند)
-        if self.store.has_owner() and self.store.is_owner(sender_id) \
-                and match_command(text, self.cfg) == "owner":
-            new_state = not self.store.is_global_suspended()
-            self.store.set_global_suspended(new_state)
-            text_resp = brand.BOT_OFF_TEXT if new_state else brand.BOT_ON_TEXT
-            log.info("وضعیت ربات از PV تغییر کرد: suspended=%s (مالک %s)",
-                     new_state, sender_id)
-            self._log_report(await self.sender.send_text(
-                client, await self._peer_of(event), text_resp
-            ))
-            return
+        if self.store.has_owner() and self.store.is_owner(sender_id):
+            if match_command(text, self.cfg) == "owner":
+                new_state = not self.store.is_global_suspended()
+                self.store.set_global_suspended(new_state)
+                text_resp = brand.BOT_OFF_TEXT if new_state else brand.BOT_ON_TEXT
+                log.info("وضعیت ربات از PV تغییر کرد: suspended=%s (مالک %s)",
+                         new_state, sender_id)
+                self._log_report(await self.sender.send_text(
+                    client, await self._peer_of(event), text_resp
+                ))
+                return
 
-        # (۳) دستورهای مدیریتی — فقط مالک سراسری و فقط وقتی ربات روشن
-        if sender_id and self.store.is_owner(sender_id):
-            if not self.store.is_active():
-                log.debug("ربات خاموش است؛ دستور مدیریتی PV از %s نادیده گرفته شد.",
-                          sender_id)
-                return
-            command = match_pv_admin_command(text, self.cfg)
-            if command == "count":
-                await self._send_pv_count(client, event)
-                return
-            if command == "list":
-                await self._send_pv_list(client, event)
-                return
+            config_cmd = match_global_config_command(text)
+            if config_cmd:
+                cmd_type, val = config_cmd
+                if cmd_type == "quota":
+                    await self._handle_quota_config(client, event, val)
+                    return
+                if cmd_type == "max_users":
+                    await self._handle_max_users_config(client, event, val)
+                    return
+                if cmd_type == "expire_days":
+                    await self._handle_expire_config(client, event, val)
+                    return
+
+            if self.store.is_active(current_time):
+                command = match_pv_admin_command(text, self.cfg)
+                if command == "count":
+                    await self._send_pv_count(client, event)
+                    return
+                if command == "list":
+                    await self._send_pv_list(client, event)
+                    return
 
         if not self.cfg.private_auto_reply:
             return
 
-        # در حالت قفل (قبل از claim یا خاموشی کلی)، PV هیچ پیام خودکاری
-        # (معرفی/منو/گزینه‌ها) نمی‌فرستد؛ فقط ثبت کاربر انجام می‌شود تا بعداً
-        # که مالک ربات را روشن کرد آمار کاربران PV در دسترس باشد.
-        if not self.store.is_active():
+        if not self.store.is_active(current_time):
             log.debug("ربات خاموش است؛ پیام PV از %s نادیده گرفته شد.", sender_id)
             return
 
-        # (۳) اولین پیام این کاربر → معرفی + منو (هرکدام فقط یک‌بار)
+        if is_help_command(norm_text):
+            help_text, entities = brand.build_help_message()
+            await self.sender.send_entities(
+                client, await self._peer_of(event), help_text, entities,
+                reply_to_msg_id=getattr(event, "id", None)
+            )
+            return
+
         if is_first_message:
             await self._send_intro_and_menu(client, event)
             return
 
-        # (۴) پیام‌های بعدی: یکی از گزینه‌های منو؟ → فقط پاسخ همان گزینه
         option = match_menu_option(text)
         if option:
             await self._send_pv_answer(client, event, option)
             return
 
-        # (۵) متن دیگر: پاسخ جدیدی اختراع نمی‌شود؛ معرفی و منو هم تکرار نمی‌شوند.
-        log.debug("پیام PV بدون گزینه‌ی منو از کاربر %s نادیده گرفته شد", sender_id)
-
     async def _send_intro_and_menu(self, client, event) -> None:
-        """اولین پیام کاربر PV: پیام معرفی (فقط یک‌بار) سپس منوی انتخاب (فقط یک‌بار)."""
         log.info("اولین پیام کاربر %s در PV → معرفی + منو",
                  getattr(event, "sender_id", None))
         self._log_report(await self._send_brand(client, event))
@@ -323,7 +638,6 @@ class BotCore:
         )
 
     async def _send_pv_answer(self, client, event, option: str) -> None:
-        """پاسخ یک گزینه‌ی منو — با همان قالب (نقل‌قول شیشه‌ای + Bold)."""
         text = brand.PV_REPLIES[option]
         log.info("گزینه «%s» از کاربر %s → ارسال پاسخ",
                  option, getattr(event, "sender_id", None))
@@ -331,25 +645,11 @@ class BotCore:
             await self.sender.send_styled(client, await self._peer_of(event), text)
         )
 
-    # ------------------------------------------- آمار کاربران PV (فقط مالک)
     async def _send_pv_count(self, client, event) -> None:
-        """«تعداد اعضا» → تعداد کل + فهرست کامل کاربران PV، به این شکل:
-
-            تعداد اعضا : 3
-
-            1 : @osine
-            2 : ali
-            3 : @elism
-
-        شماره‌گذاری از ۱ و به ترتیب «اولین ثبت» است و اگر لیست بلند شد،
-        به چند پیام متوالی تقسیم می‌شود و شماره‌ها ادامه‌دار می‌مانند
-        (شماره‌ها قبل از تکه‌تکه‌کردن حساب می‌شوند).
-        """
         users = self.store.list_pv_users()
         count = len(users)
         header = f"{self.cfg.pv_count_command} : {count}"
-        log.info("دستور «%s» توسط مالک → %s کاربر",
-                 self.cfg.pv_count_command, count)
+        log.info("دستور «%s» توسط مالک → %s کاربر", self.cfg.pv_count_command, count)
 
         if not users:
             report = await self.sender.send_text(
@@ -359,7 +659,6 @@ class BotCore:
             return
 
         lines = format_pv_user_list(users, self.cfg.pv_unknown_name)
-        # سرتیتر + یک خط خالی + فهرست (طبق فرمت خواسته‌شده)
         chunks = chunk_lines([header, ""] + lines, self.cfg.max_message_chars)
         for report in await self.sender.send_text_chunked(
             client, await self._peer_of(event), chunks
@@ -398,7 +697,6 @@ class BotCore:
         )
 
         if result.claimed:
-            # اولین «ai cod» → مالک می‌شود و ربات روشن می‌ماند (پیام خوش‌آمد/برند)
             self.store.set_global_suspended(False)
             log.info("🏆 مالک سراسری ثبت شد: user_id=%s (chat_id=%s)", user_id, chat_id)
             report = await self._send_brand(client, event)
@@ -406,7 +704,6 @@ class BotCore:
             return
 
         if result.reason == "already_same_owner":
-            # مالک دوباره «ai cod» زده است → تاگل خاموش/روشن
             new_state = not self.store.is_global_suspended()
             self.store.set_global_suspended(new_state)
             text = brand.BOT_OFF_TEXT if new_state else brand.BOT_ON_TEXT
@@ -417,7 +714,6 @@ class BotCore:
             ))
             return
 
-        # کاربر دیگری «ai cod» زده است → کاملاً نادیده گرفته می‌شود.
         log.info(
             "کاربر %s تلاش کرد مالک شود؛ نادیده گرفته شد (مالک فعلی: %s).",
             user_id, result.owner.user_id if result.owner else None,
@@ -441,7 +737,7 @@ class BotCore:
                 peer = await getter()
                 if peer is not None:
                     return peer
-            except Exception:  # noqa: BLE001 — در بدترین حالت به chat_id برمی‌گردیم
+            except Exception:
                 log.debug("get_input_chat ناموفق بود؛ از chat_id استفاده می‌شود.")
         return getattr(event, "chat_id", None)
 

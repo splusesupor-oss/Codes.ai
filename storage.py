@@ -1,15 +1,13 @@
 """
-حافظه‌ی دائمی «مالک سراسری» (Global Owner) روی SQLite — با ثبت اتمیک (Atomic).
+حافظه‌ی دائمی «مالک سراسری» (Global Owner) و تنظیمات ربات روی SQLite — با ثبت اتمیک (Atomic).
 
 قواعدی که این ماژول تضمین می‌کند:
-  * مالک بر اساس «شناسه یکتای حساب کاربر» (user_id) ذخیره می‌شود و وابسته به گروه نیست.
+  * مالک سراسری بر اساس «شناسه یکتای حساب کاربر» (user_id) ذخیره می‌شود.
   * فقط «اولین» درخواست معتبر در کل ربات مالک را تعیین می‌کند.
-  * ثبت به‌صورت Atomic است: حتی اگر دو پیام «ai cod» هم‌زمان برسند (حتی از دو پروسه‌ی
-    جداگانه)، فقط یکی برنده می‌شود. این کار با ترکیب این‌ها انجام می‌شود:
-        - CONSTRAINT یکتا: slot = 1 و PRIMARY KEY روی همان ستون
-        - تراکنش BEGIN IMMEDIATE (قفل نوشتن در سطح دیتابیس)
-        - حالت WAL و busy_timeout برای مقاومت در برابر قفل هم‌زمان
-  * با Restart ربات، مالک تغییر نمی‌کند (چون روی دیسک ذخیره می‌شود).
+  * ثبت به‌صورت Atomic است (BEGIN IMMEDIATE + WAL).
+  * مالک ثبت‌شده (Registered Bot Owner) توسط مالک سراسری با دستور «Tery ai» ثبت و جایگزین می‌شود.
+  * سهمیه روزانه و سقف کاربران مجاز به تفکیک گروه و با ریست در 00:00 Asia/Tehran مدیریت می‌شود.
+  * تاریخ انقضای ربات با دقت زمانی و پشتیبانی از restart ذخیره می‌شود.
 """
 
 from __future__ import annotations
@@ -32,7 +30,24 @@ CREATE TABLE IF NOT EXISTS global_owner (
     claimed_at         TEXT    NOT NULL
 );
 
--- تنظیمات سراسری ربات (کلید-مقدار) — برای نگهداری وضعیت «خاموشی کلی» و موارد مشابه
+-- مالک ثبت‌شده (Registered Bot Owner) — تعیین‌شده توسط مالک سراسری با «Tery ai»
+CREATE TABLE IF NOT EXISTS registered_bot_owner (
+    slot          INTEGER PRIMARY KEY CHECK (slot = 1),
+    user_id       INTEGER NOT NULL UNIQUE,
+    username      TEXT,
+    display_name  TEXT,
+    registered_at TEXT NOT NULL,
+    registered_by INTEGER NOT NULL
+);
+
+-- گروه‌هایی که با دستور «ai x cod» توسط مالک سراسری فعال شده‌اند
+CREATE TABLE IF NOT EXISTS group_activations (
+    chat_id      INTEGER PRIMARY KEY,
+    activated_at TEXT NOT NULL,
+    activated_by INTEGER NOT NULL
+);
+
+-- تنظیمات سراسری ربات (کلید-مقدار)
 CREATE TABLE IF NOT EXISTS bot_settings (
     key    TEXT PRIMARY KEY,
     value  TEXT NOT NULL
@@ -47,9 +62,6 @@ CREATE TABLE IF NOT EXISTS owner_attempts (
     result      TEXT NOT NULL            -- claimed | already_same_owner | already_other_owner
 );
 
--- کاربرانی که حداقل یک‌بار در چت خصوصی (PV) به ربات پیام داده‌اند.
--- user_id یکتاست ⇒ هر کاربر فقط یک‌بار ثبت می‌شود و پیام‌های بعدی تعداد را زیاد نمی‌کند.
--- این جدول هیچ دسترسی/مالکیتی نمی‌دهد؛ فقط آمار کاربران PV است.
 CREATE TABLE IF NOT EXISTS pv_users (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id       INTEGER NOT NULL UNIQUE,
@@ -78,7 +90,7 @@ CREATE TABLE IF NOT EXISTS ai_allowed_users (
 
 CREATE TABLE IF NOT EXISTS ai_usage (
     chat_id  INTEGER NOT NULL,
-    day      TEXT NOT NULL,                  -- YYYY-MM-DD بر اساس UTC
+    day      TEXT NOT NULL,                  -- YYYY-MM-DD بر اساس Asia/Tehran
     requests INTEGER NOT NULL DEFAULT 0,     -- تعداد درخواست‌های مصرف‌شده
     PRIMARY KEY (chat_id, day)
 );
@@ -117,6 +129,15 @@ class OwnerRecord:
 
 
 @dataclass(frozen=True)
+class RegisteredOwnerRecord:
+    user_id: int
+    username: Optional[str]
+    display_name: Optional[str]
+    registered_at: str
+    registered_by: int
+
+
+@dataclass(frozen=True)
 class ClaimResult:
     """نتیجه‌ی تلاش برای ثبت مالکیت."""
 
@@ -130,15 +151,12 @@ def _now() -> str:
 
 
 class OwnerStore:
-    """ذخیره‌ساز اتمیک مالک سراسری."""
+    """ذخیره‌ساز اتمیک مالک سراسری و تنظیمات ربات."""
 
     def __init__(self, db_path: str | Path, *, busy_timeout_ms: int = 30_000):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
-        # check_same_thread=False + قفل داخلی: هم برای استفاده‌ی تک‌پروسه‌ای تمیز است،
-        # هم تست هم‌زمانی چندنخی را ممکن می‌کند.
-        # NOTE: استفاده از BEGIN IMMEDIATE + WAL باعث می‌شود چند پروسه هم امن باشند.
         self._conn = sqlite3.connect(
             str(self.db_path), timeout=busy_timeout_ms / 1000.0, check_same_thread=False
         )
@@ -150,7 +168,7 @@ class OwnerStore:
             self._conn.executescript(SCHEMA)
             self._conn.commit()
 
-    # ------------------------------------------------------------------ API
+    # ------------------------------------------------------------------ API مالک سراسری
     def get_owner(self) -> Optional[OwnerRecord]:
         with self._lock:
             row = self._conn.execute(
@@ -166,18 +184,185 @@ class OwnerStore:
         """آیا هنوز هیچ مالک سراسری با «ai cod» ثبت نشده است؟"""
         return self.get_owner() is not None
 
+    # ------------------------------------------------- مالک ثبت‌شده (Registered Bot Owner)
+    def get_registered_bot_owner(self) -> Optional[RegisteredOwnerRecord]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM registered_bot_owner WHERE slot = 1"
+            ).fetchone()
+        if row is None:
+            return None
+        return RegisteredOwnerRecord(
+            user_id=row["user_id"],
+            username=row["username"],
+            display_name=row["display_name"],
+            registered_at=row["registered_at"],
+            registered_by=row["registered_by"],
+        )
+
+    def is_registered_bot_owner(self, user_id: int) -> bool:
+        rec = self.get_registered_bot_owner()
+        return rec is not None and int(rec.user_id) == int(user_id)
+
+    def set_registered_bot_owner(
+        self,
+        user_id: int,
+        *,
+        username: Optional[str] = None,
+        display_name: Optional[str] = None,
+        registered_by: int,
+    ) -> None:
+        user_id = int(user_id)
+        registered_by = int(registered_by)
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO registered_bot_owner
+                       (slot, user_id, username, display_name, registered_at, registered_by)
+                   VALUES (1, ?, ?, ?, ?, ?)
+                   ON CONFLICT(slot) DO UPDATE SET
+                       user_id = excluded.user_id,
+                       username = excluded.username,
+                       display_name = excluded.display_name,
+                       registered_at = excluded.registered_at,
+                       registered_by = excluded.registered_by""",
+                (user_id, username, display_name, _now(), registered_by),
+            )
+            self._conn.commit()
+
+    def revoke_registered_bot_owner(self) -> bool:
+        with self._lock:
+            cur = self._conn.execute("DELETE FROM registered_bot_owner WHERE slot = 1")
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    # ------------------------------------------------- فعال‌سازی پر-گروه (ai x cod)
+    def activate_group(self, chat_id: int, activated_by: int) -> bool:
+        chat_id = int(chat_id)
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO group_activations (chat_id, activated_at, activated_by)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(chat_id) DO UPDATE SET
+                       activated_at = excluded.activated_at,
+                       activated_by = excluded.activated_by""",
+                (chat_id, _now(), int(activated_by)),
+            )
+            self._conn.commit()
+            return True
+
+    def is_group_activated(self, chat_id: int) -> bool:
+        chat_id = int(chat_id)
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM group_activations WHERE chat_id = ?",
+                (chat_id,),
+            ).fetchone()
+        return row is not None
+
+    def deactivate_group(self, chat_id: int) -> bool:
+        chat_id = int(chat_id)
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM group_activations WHERE chat_id = ?",
+                (chat_id,),
+            )
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    # ------------------------------------------------- سهمیه و سقف اعضا
+    def get_daily_quota(self, default_val: int = 5000) -> int:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT value FROM bot_settings WHERE key = 'daily_quota'"
+            ).fetchone()
+        if row and row["value"]:
+            try:
+                return int(row["value"])
+            except ValueError:
+                pass
+        return int(default_val)
+
+    def set_daily_quota(self, quota: int) -> None:
+        quota = int(quota)
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO bot_settings(key, value) VALUES('daily_quota', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (str(quota),),
+            )
+            self._conn.commit()
+
+    def get_max_allowed_users(self, default_val: int = 3) -> int:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT value FROM bot_settings WHERE key = 'max_allowed_users'"
+            ).fetchone()
+        if row and row["value"]:
+            try:
+                return int(row["value"])
+            except ValueError:
+                pass
+        return int(default_val)
+
+    def set_max_allowed_users(self, limit: int) -> None:
+        limit = int(limit)
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO bot_settings(key, value) VALUES('max_allowed_users', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (str(limit),),
+            )
+            self._conn.commit()
+
+    # ------------------------------------------------- انقضای ربات
+    def get_expiration(self) -> Optional[_dt.datetime]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT value FROM bot_settings WHERE key = 'bot_expires_at'"
+            ).fetchone()
+        if not row or not row["value"]:
+            return None
+        try:
+            return _dt.datetime.fromisoformat(row["value"])
+        except Exception:
+            return None
+
+    def set_expiration(self, expires_at: _dt.datetime | str) -> None:
+        iso_val = expires_at if isinstance(expires_at, str) else expires_at.isoformat()
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO bot_settings(key, value) VALUES('bot_expires_at', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (iso_val,),
+            )
+            self._conn.commit()
+
+    def clear_expiration(self) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM bot_settings WHERE key = 'bot_expires_at'")
+            self._conn.commit()
+
+    def is_expired(self, now: Optional[_dt.datetime] = None) -> bool:
+        exp = self.get_expiration()
+        if exp is None:
+            return False
+        if now is None:
+            if exp.tzinfo is not None:
+                now = _dt.datetime.now(exp.tzinfo)
+            else:
+                now = _dt.datetime.now(_dt.timezone.utc)
+        elif exp.tzinfo is not None and now.tzinfo is None:
+            now = now.replace(tzinfo=exp.tzinfo)
+        elif exp.tzinfo is not None and now.tzinfo is not None:
+            now = now.astimezone(exp.tzinfo)
+        return now >= exp
+
     # ------------------------------------------------- خاموشی کلی ربات
     _KEY_SUSPENDED = "global_suspended"
 
     def is_global_suspended(self) -> bool:
-        """وضعیت «خاموشی کلی» ربات.
-
-        مقدار پیش‌فرض False است (ربات روشن)؛ فقط وقتی True است که مالک
-        با «ai cod» پس از claim، ربات را خاموش کرده باشد. این وضعیت در
-        SQLite دائمی می‌شود و بعد از restart هم باقی می‌ماند.
-        """
         if not self.has_owner():
-            return True    # قبل از claim همیشه خاموش
+            return True
         with self._lock:
             row = self._conn.execute(
                 "SELECT value FROM bot_settings WHERE key = ?",
@@ -186,7 +371,6 @@ class OwnerStore:
         return bool(row) and (row["value"] == "1")
 
     def set_global_suspended(self, suspended: bool) -> None:
-        """ذخیره‌ی دائمی وضعیت خاموشی/روشنی کلی."""
         with self._lock:
             self._conn.execute(
                 "INSERT INTO bot_settings(key, value) VALUES(?, ?) "
@@ -195,9 +379,9 @@ class OwnerStore:
             )
             self._conn.commit()
 
-    def is_active(self) -> bool:
-        """آیا ربات در حالت «فعال» است (مالک ثبت شده و خاموش نشده)؟"""
-        return self.has_owner() and not self.is_global_suspended()
+    def is_active(self, now: Optional[_dt.datetime] = None) -> bool:
+        """آیا ربات در حالت فعال است؟ (مالک دارد، معلق نیست و منقضی نشده)"""
+        return self.has_owner() and not self.is_global_suspended() and not self.is_expired(now)
 
     def claim(
         self,
@@ -208,10 +392,6 @@ class OwnerStore:
         username: Optional[str] = None,
         display_name: Optional[str] = None,
     ) -> ClaimResult:
-        """تلاش برای ثبت این کاربر به‌عنوان مالک سراسری.
-
-        این متد Atomic است: اگر مالکی وجود داشته باشد، هیچ‌چیز نوشته نمی‌شود.
-        """
         user_id = int(user_id)
         with self._lock:
             try:
@@ -241,7 +421,6 @@ class OwnerStore:
                          message_id, _now()),
                     )
                 except sqlite3.IntegrityError:
-                    # مسابقه باخته شد (پروسه‌ی دیگری زودتر ثبت کرده است)
                     self._conn.execute("ROLLBACK")
                     owner = self.get_owner()
                     reason = (
@@ -271,12 +450,6 @@ class OwnerStore:
         username: Optional[str] = None,
         display_name: Optional[str] = None,
     ) -> bool:
-        """ثبت یک‌بارِ کاربر PV.
-
-        Returns:
-            True اگر کاربر «تازه» ثبت شده باشد؛ False اگر از قبل ثبت شده بود
-            (پیام‌های بعدی همان کاربر تعداد را افزایش نمی‌دهند).
-        """
         user_id = int(user_id)
         with self._lock:
             try:
@@ -297,13 +470,11 @@ class OwnerStore:
                 raise
 
     def count_pv_users(self) -> int:
-        """تعداد کل کاربران ثبت‌شده‌ی PV."""
         with self._lock:
             row = self._conn.execute("SELECT COUNT(*) AS c FROM pv_users").fetchone()
         return int(row["c"])
 
     def list_pv_users(self) -> list[PvUser]:
-        """فهرست کاربران PV به ترتیب اولین ثبت (برای شماره‌گذاری پایدار)."""
         with self._lock:
             rows = self._conn.execute(
                 "SELECT * FROM pv_users ORDER BY id ASC"
@@ -320,7 +491,6 @@ class OwnerStore:
 
     # ------------------------------------------------ هوش مصنوعی گروه‌ها (AI)
     def ai_set_enabled(self, chat_id: int, enabled: bool) -> None:
-        """روشن/خاموش کردن AI برای یک گروه خاص (بدون اثر روی گروه‌های دیگر)."""
         with self._lock:
             self._conn.execute(
                 """INSERT INTO ai_group_state (chat_id, enabled, updated_at)
@@ -347,7 +517,6 @@ class OwnerStore:
         username: Optional[str] = None,
         display_name: Optional[str] = None,
     ) -> bool:
-        """مجاز کردن کاربر در یک گروه. Returns: True اگر کاربر تازه مجاز شده باشد."""
         with self._lock:
             try:
                 self._conn.execute("BEGIN IMMEDIATE")
@@ -382,7 +551,6 @@ class OwnerStore:
         return row is not None
 
     def ai_revoke_user(self, chat_id: int, user_id: int) -> bool:
-        """حذف مجوز کاربر در یک گروه. Returns: True اگر مجوزی وجود داشت و حذف شد."""
         with self._lock:
             cur = self._conn.execute(
                 "DELETE FROM ai_allowed_users WHERE chat_id = ? AND user_id = ?",
@@ -417,7 +585,6 @@ class OwnerStore:
         return int(row["requests"]) if row else 0
 
     def ai_used_quota(self, chat_id: int, day: str) -> int:
-        """تعداد درخواست‌های مصرف‌شده امروز برای یک گروه (بدون تغییر)."""
         with self._lock:
             row = self._conn.execute(
                 "SELECT requests FROM ai_usage WHERE chat_id = ? AND day = ?",
@@ -426,11 +593,6 @@ class OwnerStore:
             return int(row["requests"]) if row else 0
 
     def ai_consume_quota(self, chat_id: int, day: str, limit: int) -> bool:
-        """مصرف یک واحد از سهمیه‌ی روزانه‌ی همان گروه — اتمیک.
-
-        Returns:
-            True اگر سهمیه داشت و مصرف شد؛ False اگر سهمیه‌ی روز تمام شده بود.
-        """
         chat_id, limit = int(chat_id), int(limit)
         with self._lock:
             try:
@@ -454,7 +616,6 @@ class OwnerStore:
                 raise
 
     def ai_exhaust_quota(self, chat_id: int, day: str, limit: int) -> None:
-        """علامت‌زدن سهمیه‌ی روز به‌عنوان تمام‌شده (وقتی خود Cloudflare quota برگرداند)."""
         with self._lock:
             self._conn.execute(
                 """INSERT INTO ai_usage (chat_id, day, requests) VALUES (?, ?, ?)
@@ -464,7 +625,6 @@ class OwnerStore:
             self._conn.commit()
 
     def attempts(self) -> list[dict]:
-        """سابقه‌ی همه‌ی تلاش‌های «ai cod» (برای تست و دیباگ)."""
         with self._lock:
             rows = self._conn.execute(
                 "SELECT * FROM owner_attempts ORDER BY id"
@@ -472,7 +632,6 @@ class OwnerStore:
         return [dict(r) for r in rows]
 
     def export_json(self) -> str:
-        """نسخه‌ی JSON از مالک فعلی (برای بکاپ/بازرسی)."""
         import json
 
         owner = self.get_owner()
@@ -497,7 +656,6 @@ class OwnerStore:
             )
             self._conn.commit()
         except sqlite3.Error:
-            # لاگ نباید مسیر اصلی را خراب کند
             pass
 
     @staticmethod
