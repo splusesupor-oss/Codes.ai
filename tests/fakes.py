@@ -19,13 +19,14 @@ class FakeClient:
     """کلاینت جعلی: درخواست‌های واقعی MTProto را فقط ثبت می‌کند."""
 
     def __init__(self, *, reject_blockquote: bool = False, reject_all: bool = False,
-                 _request_side_effect=None):
+                 _request_side_effect=None, me_id: int = 777000):
         # همهٔ درخواست‌ها (از جمله SetTypingRequest) در این لیست ذخیره می‌شوند.
         self.all_requests: list = []
         self.reject_blockquote = reject_blockquote
         self.reject_all = reject_all
         self._next_id = 100
         self._side_effect = _request_side_effect  # برای کنترل دقیق‌تر در تست (callable(req) -> raise/None)
+        self.me_id = me_id  # شناسهٔ «خودِ ربات» در FakeClient
         # برای سازگاری با تست‌های قبلی: self.requests فقط درخواست‌هایی را نشان
         # می‌دهد که پیام هستند (نه SetTypingRequest)، تا متدهای prev نظیر
         # texts() و self.client.requests[-1].message در تست‌های موجود از کار نیفتند.
@@ -41,6 +42,13 @@ class FakeClient:
     def requests(self, value):
         # برای سازگاری با کدهای قبلی که self.requests را مستقیماً مقداردهی می‌کنند
         self.all_requests = list(value) if value is not None else []
+
+    async def get_me(self, input_peer=False):
+        u = types.User(id=self.me_id, is_self=True, access_hash=0,
+                       first_name="acod", username=None, phone=None)
+        if input_peer:
+            return types.InputPeerUser(user_id=self.me_id, access_hash=0)
+        return u
 
     async def get_input_entity(self, chat):
         # مثل خود SPlusthon: شناسه‌ی مثبت = کاربر (PV)، منفی = گروه
@@ -146,11 +154,13 @@ class FakeReplyMessage:
     """پیام مرجعی که کاربر روی آن Reply کرده است (خروجی get_reply_message)."""
 
     def __init__(self, *, sender_id: int, text: str = "", msg_id: int = 1,
-                 username: Optional[str] = None, display_name: str = "User"):
+                 username: Optional[str] = None, display_name: str = "User",
+                 out: bool = False):
         self.sender_id = sender_id
         self.raw_text = text
         self.id = msg_id
         self.sender = FakeSender(sender_id, first_name=display_name, username=username)
+        self.out = out  # True یعنی این پیام reply شده «خودِ ربات» فرستاده (در SPlusthon)
 
 
 class FakeAI:

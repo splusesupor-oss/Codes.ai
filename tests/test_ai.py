@@ -94,9 +94,20 @@ class AITestCase(unittest.TestCase):
     def ai_calls(self):
         return len(self.ai_client.calls)
 
-    def reply_from(self, user_id, *, username=None, display_name="کاربر", msg_id=77, text=""):
+    def reply_from(self, user_id, *, username=None, display_name="کاربر", msg_id=77, text="", out=False):
         return FakeReplyMessage(sender_id=user_id, username=username,
-                                display_name=display_name, msg_id=msg_id, text=text)
+                                display_name=display_name, msg_id=msg_id, text=text,
+                                out=out)
+
+    def bot_reply(self, *, msg_id=77, text="..."):
+        """پیام مرجع متعلق به خود ربات (reply ای که AI باید به آن پاسخ بدهد)."""
+        return FakeReplyMessage(
+            sender_id=self.client.me_id,
+            display_name="acod",
+            msg_id=msg_id,
+            text=text,
+            out=True,
+        )
 
 
 class TestToggle(AITestCase):
@@ -201,7 +212,7 @@ class TestChat(AITestCase):
         self.store.ai_set_enabled(GROUP_A, True)
 
     def test_8_unauthorized_user_gets_denial_without_api_call(self):
-        run(self.send("سلام", user_id=USER_1, reply_to=self.reply_from(USER_2)))
+        run(self.send("سلام", user_id=USER_1, reply_to=self.bot_reply()))
 
         self.assertEqual(self.ai_calls(), 0, "برای کاربر غیرمجاز نباید API صدا زده شود")
         self.assertEqual(self.texts(), [brand.AI_DENIED_TEXT])
@@ -209,7 +220,7 @@ class TestChat(AITestCase):
     def test_9_authorized_user_gets_ai_reply(self):
         self.store.ai_allow_user(GROUP_A, USER_1, username="osine")
         run(self.send("هوای تهران چطوره؟", user_id=USER_1,
-                      reply_to=self.reply_from(USER_2, msg_id=77)))
+                      reply_to=self.bot_reply(msg_id=77)))
 
         self.assertEqual(self.ai_calls(), 1)
         self.assertEqual(self.texts(), [self.ai_client.reply])
@@ -220,7 +231,7 @@ class TestChat(AITestCase):
         self.assertEqual(req.reply_to.reply_to_msg_id, 1)   # id پیام کاربر در FakeEvent
 
     def test_9b_owner_can_talk_to_ai(self):
-        run(self.send("سلام", user_id=OWNER, reply_to=self.reply_from(USER_2)))
+        run(self.send("سلام", user_id=OWNER, reply_to=self.bot_reply()))
         self.assertEqual(self.ai_calls(), 1)
         self.assertEqual(self.texts(), [self.ai_client.reply])
 
@@ -234,14 +245,14 @@ class TestChat(AITestCase):
     def test_13_disabled_ai_never_calls_api(self):
         self.store.ai_set_enabled(GROUP_A, False)
         self.store.ai_allow_user(GROUP_A, USER_1)
-        run(self.send("سلام", user_id=USER_1, reply_to=self.reply_from(USER_2)))
+        run(self.send("سلام", user_id=USER_1, reply_to=self.bot_reply()))
 
         self.assertEqual(self.ai_calls(), 0)
         self.assertEqual(self.client.requests, [])
 
     def test_13b_media_or_empty_text_is_ignored(self):
         self.store.ai_allow_user(GROUP_A, USER_1)
-        run(self.send("   ", user_id=USER_1, reply_to=self.reply_from(USER_2)))
+        run(self.send("   ", user_id=USER_1, reply_to=self.bot_reply()))
 
         self.assertEqual(self.ai_calls(), 0)
         self.assertEqual(self.client.requests, [])
@@ -397,7 +408,7 @@ class TestQuota(AITestCase):
 
         async def ask(text):
             event = FakeEvent(text, user_id=USER_1, chat_id=GROUP_A, is_group=True,
-                              reply_to=self.reply_from(USER_2))
+                              reply_to=self.bot_reply())
             await core.on_new_message(self.client, event)
 
         run(ask("یک"))
@@ -416,24 +427,24 @@ class TestQuota(AITestCase):
     def test_14b_cloudflare_quota_error_marks_day_as_exhausted(self):
         self.ai_client.error = AIQuotaExceeded("HTTP 429 | daily free allocation of 10,000 neurons")
 
-        run(self.send("سلام", user_id=USER_1, reply_to=self.reply_from(USER_2)))
+        run(self.send("سلام", user_id=USER_1, reply_to=self.bot_reply()))
 
         self.assertEqual(self.texts(), [brand.AI_QUOTA_TEXT])
         self.assertEqual(self.store.ai_usage(GROUP_A, utc_day()), self.cfg.ai_daily_quota)
 
         self.client.clear_requests()
-        run(self.send("سلام دوباره", user_id=USER_1, reply_to=self.reply_from(USER_2)))
+        run(self.send("سلام دوباره", user_id=USER_1, reply_to=self.bot_reply()))
         self.assertEqual(self.texts(), [brand.AI_QUOTA_TEXT])   # دیگر درخواست نمی‌رود
         self.assertEqual(self.ai_calls(), 1)
 
     def test_14c_config_error_is_reported(self):
         self.ai_client.error = AIConfigError("token نیست")
-        run(self.send("سلام", user_id=USER_1, reply_to=self.reply_from(USER_2)))
+        run(self.send("سلام", user_id=USER_1, reply_to=self.bot_reply()))
         self.assertEqual(self.texts(), [brand.AI_CONFIG_ERROR_TEXT])
 
     def test_15_long_message_is_truncated_per_request(self):
         long_text = "س" * 10_000
-        run(self.send(long_text, user_id=USER_1, reply_to=self.reply_from(USER_2)))
+        run(self.send(long_text, user_id=USER_1, reply_to=self.bot_reply()))
 
         self.assertEqual(self.ai_calls(), 1, "یک پیام بلند باید فقط یک درخواست بسازد")
         sent = self.ai_client.calls[0]
@@ -443,7 +454,7 @@ class TestQuota(AITestCase):
 
     def test_15b_history_is_bounded(self):
         for i in range(6):
-            run(self.send(f"پیام {i}", user_id=USER_1, reply_to=self.reply_from(USER_2)))
+            run(self.send(f"پیام {i}", user_id=USER_1, reply_to=self.bot_reply()))
 
         last_call = self.ai_client.calls[-1]
         # system + حداکثر (ai_history_pairs * 2) پیام
@@ -492,7 +503,7 @@ class TestDailyQuotaValue(AITestCase):
 
         async def ask(text="سلام"):
             event = FakeEvent(text, user_id=USER_1, chat_id=GROUP_A, is_group=True,
-                              reply_to=self.reply_from(USER_2))
+                              reply_to=self.bot_reply())
             await self.core.on_new_message(self.client, event)
 
         # پر کردن سهمیه‌ی امروز با مصرف مستقیم (سریع‌تر از ۵۰۰۰ درخواست شبکه‌ای)
@@ -507,7 +518,7 @@ class TestDailyQuotaValue(AITestCase):
         # گروه دیگر همان روز همچنان کار می‌کند
         self.store.ai_set_enabled(GROUP_B, True)
         self.store.ai_allow_user(GROUP_B, USER_1)
-        run(self.send("سلام", user_id=USER_1, chat_id=GROUP_B, reply_to=self.reply_from(USER_2)))
+        run(self.send("سلام", user_id=USER_1, chat_id=GROUP_B, reply_to=self.bot_reply()))
         self.assertEqual(self.ai_calls(), 1)
 
 
@@ -583,7 +594,7 @@ class TestExactSystemTemplates(AITestCase):
     # ------------------------------------------------------------ غیرمجاز
     def test_denied_message_is_exactly_the_requested_template_and_no_api_call(self):
         self.store.ai_set_enabled(GROUP_A, True)
-        run(self.send("سلام", user_id=USER_1, reply_to=self.reply_from(USER_2)))
+        run(self.send("سلام", user_id=USER_1, reply_to=self.bot_reply()))
 
         self.assertEqual(self.texts(), [self.EXACT_DENIED])
         self.assertEqual(self.ai_calls(), 0, "برای کاربر غیرمجاز نباید API صدا زده شود")
@@ -649,7 +660,7 @@ class TestExactSystemTemplates(AITestCase):
         """هیچ‌کدام از پیام‌های سیستمی AI نباید Blockquote داشته باشند."""
         self.store.ai_set_enabled(GROUP_A, True)
         run(self.send("ai list", user_id=OWNER, reply_to=self.reply_from(USER_1, username="ali")))
-        run(self.send("سلام", user_id=USER_1, reply_to=self.reply_from(USER_2)))     # عدم دسترسی
+        run(self.send("سلام", user_id=USER_1, reply_to=self.bot_reply()))     # عدم دسترسی
         run(self.send("ai of", user_id=OWNER))
         run(self.send("ai list", user_id=OWNER))                                     # بدون Reply
 
@@ -660,7 +671,7 @@ class TestExactSystemTemplates(AITestCase):
 
     def test_denied_message_has_bold_without_glass_quote(self):
         self.store.ai_set_enabled(GROUP_A, True)
-        run(self.send("سلام", user_id=USER_1, reply_to=self.reply_from(USER_2)))
+        run(self.send("سلام", user_id=USER_1, reply_to=self.bot_reply()))
         kinds = [type(e).__name__ for e in (self.client.requests[-1].entities or [])]
         self.assertEqual(kinds.count("MessageEntityBold"), 1)
         self.assertNotIn("MessageEntityBlockquote", kinds)
@@ -709,7 +720,13 @@ class TestExactSystemTemplates(AITestCase):
         self.assertEqual(self.client.requests[-1].message, brand.AI_NEED_REPLY_TEXT)
 
         self.client.clear_requests()
+        # ریپلای روی پیام یک کاربر دیگر (نه ربات) → نباید هیچ پیامی (حتی عدم دسترسی) بفرستد
         run(self.send("سلام", user_id=USER_2, reply_to=self.reply_from(USER_1)))
+        self.assertEqual(self.texts(), [])
+
+        self.client.clear_requests()
+        # ریپلای روی پیام ربات ولی کاربر مجاز نیست → باید پیام عدم دسترسی بدهد
+        run(self.send("سلام", user_id=USER_2, reply_to=self.bot_reply()))
         self.assertEqual(self.texts(), [self.EXACT_DENIED])   # کاربر مجاز نیست
 
 
@@ -722,13 +739,13 @@ class TestPerGroupIsolation(AITestCase):
 
         # گروه A → پاسخ می‌گیرد
         run(self.send("سلام", user_id=USER_1, chat_id=GROUP_A,
-                      reply_to=self.reply_from(USER_2)))
+                      reply_to=self.bot_reply()))
         self.assertEqual(self.texts(), [self.ai_client.reply])
         self.client.clear_requests()
 
         # گروه B → همان کاربر مجاز نیست
         run(self.send("سلام", user_id=USER_1, chat_id=GROUP_B,
-                      reply_to=self.reply_from(USER_2)))
+                      reply_to=self.bot_reply()))
         self.assertEqual(self.texts(), [brand.AI_DENIED_TEXT])
 
     def test_12b_enable_in_group_a_does_not_enable_group_b(self):
@@ -755,8 +772,8 @@ class TestPerGroupIsolation(AITestCase):
         self.store.ai_allow_user(GROUP_A, USER_1)
         self.store.ai_allow_user(GROUP_B, USER_1)
 
-        run(self.send("الف", user_id=USER_1, chat_id=GROUP_A, reply_to=self.reply_from(USER_2)))
-        run(self.send("ب", user_id=USER_1, chat_id=GROUP_B, reply_to=self.reply_from(USER_2)))
+        run(self.send("الف", user_id=USER_1, chat_id=GROUP_A, reply_to=self.bot_reply()))
+        run(self.send("ب", user_id=USER_1, chat_id=GROUP_B, reply_to=self.bot_reply()))
 
         day = utc_day()
         self.assertEqual(self.store.ai_usage(GROUP_A, day), 1)
@@ -782,7 +799,7 @@ class TestPVIsolation(AITestCase):
         self.store.ai_set_enabled(GROUP_A, True)
         self.store.ai_allow_user(GROUP_A, OWNER)
 
-        run(self.pv("سلام", user_id=OWNER, reply_to=self.reply_from(USER_2)))
+        run(self.pv("سلام", user_id=OWNER, reply_to=self.bot_reply()))
 
         self.assertEqual(self.ai_calls(), 0, "PV نباید AI را فعال کند")
         self.assertEqual(self.texts(), [brand.FULL_TEXT, brand.MENU_TEXT])   # رفتار PV
@@ -803,7 +820,7 @@ class TestPersistence(AITestCase):
         run(self.send("ai list", user_id=OWNER, chat_id=GROUP_A,
                       reply_to=self.reply_from(USER_1, username="osine")))
         run(self.send("سلام", user_id=USER_1, chat_id=GROUP_A,
-                      reply_to=self.reply_from(USER_2)))     # یک مصرف سهمیه
+                      reply_to=self.bot_reply()))     # یک مصرف سهمیه
         self.store.close()
 
         store2 = OwnerStore(self.db)                            # ری‌استارت
@@ -821,7 +838,7 @@ class TestPersistence(AITestCase):
             async def scenario():
                 event = FakeEvent("سلام بعد از ری‌استارت", user_id=USER_1,
                                   chat_id=GROUP_A, is_group=True,
-                                  reply_to=self.reply_from(USER_2))
+                                  reply_to=self.bot_reply())
                 await core2.on_new_message(client2, event)
 
             run(scenario())
@@ -861,7 +878,7 @@ class TestSafety(AITestCase):
 
     def test_17d_ai_commands_require_owner_even_with_reply(self):
         self.make_owner()
-        run(self.send("ai list x", user_id=USER_1, reply_to=self.reply_from(USER_2)))
+        run(self.send("ai list x", user_id=USER_1, reply_to=self.bot_reply()))
         self.assertEqual(self.client.requests, [])
 
     def test_17e_outgoing_messages_are_ignored(self):
@@ -869,7 +886,7 @@ class TestSafety(AITestCase):
         self.store.ai_set_enabled(GROUP_A, True)
         self.store.ai_allow_user(GROUP_A, USER_1)
         run(self.send("ai online", user_id=OWNER, out=True))
-        run(self.send("سلام", user_id=USER_1, out=True, reply_to=self.reply_from(USER_2)))
+        run(self.send("سلام", user_id=USER_1, out=True, reply_to=self.bot_reply()))
 
         self.assertEqual(self.ai_calls(), 0)
 
@@ -885,7 +902,7 @@ class TestSafety(AITestCase):
         self.make_owner()
         self.store.ai_set_enabled(GROUP_A, True)
         self.store.ai_allow_user(GROUP_A, USER_1)
-        run(self.send("سلام", user_id=USER_1, reply_to=self.reply_from(USER_2)))
+        run(self.send("سلام", user_id=USER_1, reply_to=self.bot_reply()))
 
         messages = self.ai_client.calls[0]
         self.assertEqual(messages[0]["role"], "system")
@@ -984,7 +1001,7 @@ class TestRealClientIntegration(AITestCase):
 
         async def scenario():
             event = FakeEvent("هوای تهران چطوره؟", user_id=USER_1, chat_id=GROUP_A,
-                              is_group=True, reply_to=self.reply_from(USER_2))
+                              is_group=True, reply_to=self.bot_reply())
             await core.on_new_message(self.client, event)
 
         run(scenario())

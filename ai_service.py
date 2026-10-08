@@ -245,7 +245,7 @@ class GroupAI:
 
     # ------------------------------------------------------ گفت‌وگو با AI (گروه)
     async def handle_chat(self, client, event) -> None:
-        """مسیر گفت‌وگو: فقط Reply + متن، فقط در گروهی که AI روشن است."""
+        """مسیر گفت‌وگو: فقط Reply روی پیام‌های خود ربات، فقط در گروهی که AI روشن است."""
         chat_id = int(getattr(event, "chat_id", 0) or 0)
         sender_id = int(getattr(event, "sender_id", 0) or 0)
         text = (getattr(event, "raw_text", None) or "").strip()
@@ -257,6 +257,37 @@ class GroupAI:
         if not text:
             log.debug("پیام بدون متن در گروه %s برای AI نادیده گرفته شد", chat_id)
             return
+
+        # شرط مهم: AI فقط وقتی فعال می‌شود که کاربر روی «یکی از پیام‌های خود ربات»
+        # ریپلای کرده باشد. ریپلای روی پیام دیگر کاربران (هرچند ریپلای باشد) نباید
+        # نه پاسخ هوش مصنوعی بدهد و نه پیام عدم دسترسی.
+        reply_msg = await self._get_reply_message(event)
+        if reply_msg is None:
+            return  # اصلاً Reply نیست (نباید رخ دهد ولی guard)
+
+        # شناسهٔ خود ربات (me)
+        my_id = None
+        get_me = getattr(client, "get_me", None)
+        if callable(get_me):
+            try:
+                me = await get_me()
+                my_id = int(getattr(me, "id", 0) or 0)
+            except Exception:  # noqa: BLE001 — در محیط تست ممکن است get_me در دسترس/پاسخگو نباشد
+                my_id = None
+
+        # راهکار دوم: از ویژگی out روی پیام reply (اگر پیام reply خروجی/مال ما باشد)
+        reply_is_mine = bool(getattr(reply_msg, "out", False))
+        reply_sender_id = int(getattr(reply_msg, "sender_id", 0) or 0)
+        if my_id and reply_sender_id and reply_sender_id != my_id and not reply_is_mine:
+            log.debug("ریپلای روی پیام کاربری دیگر (sender=%s) در گروه %s نادیده گرفته شد.",
+                      reply_sender_id, chat_id)
+            return
+        if (not reply_is_mine) and (not my_id):
+            # اگر نتوانستیم id خودمان را بفهمیم، فقط به out اعتماد می‌کنیم؛ این حالت
+            # عملاً در اجرای واقعی رخ نمی‌دهد (get_me در دسترس است).
+            if reply_sender_id and reply_sender_id != sender_id and not reply_is_mine:
+                # نمی‌توان مطمئن بود؛ محافظه‌کارانه نادیده می‌گیریم
+                return
 
         # مجوز: کاربر مجازِ همان گروه یا خود مالک سراسری
         allowed = self.store.ai_is_allowed(chat_id, sender_id) or (
