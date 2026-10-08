@@ -19,7 +19,6 @@ import datetime as _dt
 import logging
 import re
 import unicodedata
-import zoneinfo
 from typing import Optional
 
 import brand
@@ -32,7 +31,13 @@ from storage import OwnerStore
 
 log = logging.getLogger("acod.core")
 
-TEHRAN_TZ = zoneinfo.ZoneInfo("Asia/Tehran")
+try:
+    import zoneinfo
+    TEHRAN_TZ = zoneinfo.ZoneInfo("Asia/Tehran")
+except Exception:
+    # فال‌بک برای محیط‌هایی مثل Termux / Android / ویندوز که پکیج tzdata ندارند.
+    # ساعت رسمی ایران (تهران) به صورت ثابت UTC+03:30 است (بدون DST).
+    TEHRAN_TZ = _dt.timezone(_dt.timedelta(hours=3, minutes=30), name="Asia/Tehran")
 _ZWNJ = "\u200c"
 _ARABIC_PAIRS = str.maketrans({"ي": "ی", "ك": "ک", "ۀ": "ه", "أ": "ا", "إ": "ا"})
 PERSIAN_DIGITS_TABLE = str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789")

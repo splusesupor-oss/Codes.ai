@@ -20,7 +20,6 @@ import asyncio
 import datetime as _dt
 import tempfile
 import unittest
-import zoneinfo
 from pathlib import Path
 
 import brand
@@ -40,7 +39,11 @@ from tests.fakes import (
     FakeUserParticipant,
 )
 
-TEHRAN_TZ = zoneinfo.ZoneInfo("Asia/Tehran")
+try:
+    import zoneinfo
+    TEHRAN_TZ = zoneinfo.ZoneInfo("Asia/Tehran")
+except Exception:
+    TEHRAN_TZ = _dt.timezone(_dt.timedelta(hours=3, minutes=30), name="Asia/Tehran")
 GROUP_A = -1001
 GROUP_B = -2002
 GLOBAL_OWNER_ID = 1000

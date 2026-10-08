@@ -17,7 +17,6 @@ from __future__ import annotations
 import asyncio
 import datetime as _dt
 import logging
-import zoneinfo
 from collections import OrderedDict, deque
 from typing import Optional
 
@@ -30,7 +29,13 @@ from storage import OwnerStore
 
 log = logging.getLogger("acod.ai")
 
-TEHRAN_TZ = zoneinfo.ZoneInfo("Asia/Tehran")
+try:
+    import zoneinfo
+    TEHRAN_TZ = zoneinfo.ZoneInfo("Asia/Tehran")
+except Exception:
+    # فال‌بک برای محیط‌هایی مثل Termux / Android / ویندوز که پکیج tzdata ندارند.
+    # ساعت رسمی ایران (تهران) به صورت ثابت UTC+03:30 است (بدون DST).
+    TEHRAN_TZ = _dt.timezone(_dt.timedelta(hours=3, minutes=30), name="Asia/Tehran")
 _TYPING_INTERVAL = 4.5
 
 
