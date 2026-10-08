@@ -102,7 +102,7 @@ AI_LIST_COMMAND = "ai list"         # مجاز کردن کاربرِ Reply‌ش�
 AI_LISTX_COMMAND = "ai list x"      # حذف مجوز کاربرِ Reply‌شده (فقط مالک سراسری)
 
 # مدل واقعی Cloudflare Workers AI
-AI_MODEL = "@cf/zai-org/glm-4.7-flash"
+AI_MODEL = "@cf/meta/llama-3.1-8b-instruct-fp8-fast"
 
 # سهمیه‌ی داخلی روزانه به تفکیک هر گروه (بر اساس روز UTC، هماهنگ با ریست Cloudflare)
 # هر گروه مستقل از بقیه، روزانه تا این تعداد درخواست به مدل می‌فرستد.
@@ -115,7 +115,9 @@ AI_DAILY_QUOTA = 5000
 AI_MAX_OUTPUT_TOKENS = 1024
 AI_MAX_INPUT_CHARS = 800            # طول متن ورودی هر پیام کاربر (مازاد بریده می‌شود)
 AI_HISTORY_PAIRS = 2                # چند جفت گفت‌وگو در حافظه نگه داشته شود (۰ = بدون تاریخچه)
-AI_TIMEOUT = 45                     # ثانیه
+AI_TIMEOUT = 22                     # ثانیه — کوتاه‌تر از قبل تا پاسخ سریع‌تر یا زودتر ری‌ترای کند
+AI_RETRY_MAX = 3                    # حداکثر تلاش مجدد برای خطاهای موقت (شبکه/ظرفیت/5xx)
+AI_RETRY_BASE_DELAY = 1.2           # ثانیه — تأخیر پایه برای backoff نمایی
 
 # مالک سراسری به‌صورت پیش‌فرض مجاز است با AI صحبت کند (قابل خاموش کردن)
 AI_OWNER_ALWAYS_ALLOWED = True
@@ -198,6 +200,8 @@ class Config:
     ai_max_input_chars: int = AI_MAX_INPUT_CHARS
     ai_history_pairs: int = AI_HISTORY_PAIRS
     ai_timeout: float = AI_TIMEOUT
+    ai_retry_max: int = AI_RETRY_MAX
+    ai_retry_base_delay: float = AI_RETRY_BASE_DELAY
     ai_owner_always_allowed: bool = AI_OWNER_ALWAYS_ALLOWED
     link_preview: bool = LINK_PREVIEW
     quote_mode: str = QUOTE_MODE
@@ -240,6 +244,8 @@ class Config:
             ai_max_input_chars=int(os.environ.get("ACOD_AI_MAX_INPUT_CHARS", AI_MAX_INPUT_CHARS)),
             ai_history_pairs=int(os.environ.get("ACOD_AI_HISTORY_PAIRS", AI_HISTORY_PAIRS)),
             ai_timeout=float(os.environ.get("ACOD_AI_TIMEOUT", AI_TIMEOUT)),
+            ai_retry_max=int(os.environ.get("ACOD_AI_RETRY_MAX", AI_RETRY_MAX)),
+            ai_retry_base_delay=float(os.environ.get("ACOD_AI_RETRY_BASE_DELAY", AI_RETRY_BASE_DELAY)),
             ai_owner_always_allowed=os.environ.get("ACOD_AI_OWNER_ALLOWED", "1")
             not in ("0", "false", "False"),
             link_preview=os.environ.get("ACOD_LINK_PREVIEW", "0") in ("1", "true", "True"),

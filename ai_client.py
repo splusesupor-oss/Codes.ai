@@ -48,12 +48,14 @@ DEFAULT_MODEL = "@cf/zai-org/glm-4.7-flash"
 
 # --- دسته‌بندی کدهای خطا (طبق جدول رسمی Workers AI + کدهای احراز هویتِ مشاهده‌شده) ---
 QUOTA_ERROR_CODES = {3036, 4006, 3037}          # سهمیه‌ی روزانه تمام شده است
-CAPACITY_ERROR_CODES = {3040}                   # ظرفیت موقتاً پر است — سهمیه نیست
+CAPACITY_ERROR_CODES = {3040}                   # ظرفیت موقتاً پر است — سهمیه نیست؛ ری‌ترای دارد
 AUTH_ERROR_CODES = {10000, 9109, 9106}          # مشکل توکن/دسترسی
 PAID_PLAN_ERROR_CODES = {5035}                  # نیاز به Workers Paid
 MODEL_ERROR_CODES = {5007, 3042}                # مدل ناموجود / شناسه نامعتبر
 REQUEST_ERROR_CODES = {3006, 5004, 3003}        # درخواست بزرگ/ناقص/نامعتبر
 TIMEOUT_ERROR_CODES = {3007, 3008}              # timeout/aborted سمت سرور
+# خطاهایی که موقت هستند و ارزش تلاش مجدد دارند (شبکه، ظرفیت، خطای سرور، timeout)
+RETRYABLE_ERROR_CODES = CAPACITY_ERROR_CODES | TIMEOUT_ERROR_CODES | {3001, 3002, 1000, 1001, 50000}
 
 QUOTA_KEYWORDS = (
     "neurons",
@@ -95,9 +97,16 @@ def _scrub(text: str, *secrets: str) -> str:
 class AIError(Exception):
     """خطای عمومی سرویس هوش مصنوعی."""
 
+    #: آیا این خطا «موقتی» است و تلاش مجدد می‌تواند موفق باشد؟
+    retryable: bool = False
+
+    def __init__(self, message: str = "", *args, retryable: bool = False):
+        super().__init__(message, *args)
+        self.retryable = bool(retryable)
+
 
 class AIQuotaExceeded(AIError):
-    """سهمیه‌ی روزانه‌ی Cloudflare (Neurons) تمام شده است."""
+    """سهمیه‌ی روزانه‌ی Cloudflare (Neurons) تمام شده است — تلاش مجدد بی‌فایده است."""
 
 
 class AIConfigError(AIError):
@@ -338,11 +347,11 @@ class CloudflareAI:
                 raw = await resp.text()
                 status = resp.status
         except asyncio.TimeoutError as exc:
-            raise AIError(f"Timeout پس از {self.timeout} ثانیه (کلاینت)") from exc
+            raise AIError(f"Timeout پس از {self.timeout} ثانیه (کلاینت)", retryable=True) from exc
         except AIError:
             raise
         except Exception as exc:  # noqa: BLE001 — خطای شبکه/اتصال
-            raise AIError(f"{type(exc).__name__}: {exc}") from exc
+            raise AIError(f"{type(exc).__name__}: {exc}", retryable=True) from exc
         finally:
             if owns:
                 await self.close()
@@ -374,10 +383,25 @@ class CloudflareAI:
             hint = hint_for(codes, status, joined)
             if _is_quota_error(status, codes, joined):
                 raise AIQuotaExceeded(f"HTTP {status} | {joined or 'quota/limit reached'}")
+            # خطاهای موقت (قابل تلاش مجدد):
+            #   * 3040 / 3007 / 3008 / خطاهای ناشناخته‌ی Cloudflare
+            #   * 5xx (سرور)
+            #   * 408 (درخواست timeout)
+            #   * 429 غیرسهمیه (rate limit موقت)
+            retryable = bool(
+                RETRYABLE_ERROR_CODES.intersection(codes or [])
+                or (status and status >= 500)
+                or status == 408
+                or (status == 429 and not _is_quota_error(status, codes, joined))
+            )
+            # خطاهای قطعی (احراز هویت، مدل، درخواست بزرگ، نیاز به پلن پولی) — ری‌ترای بی‌فایده
+            if AUTH_ERROR_CODES.intersection(codes or []) or PAID_PLAN_ERROR_CODES.intersection(codes or []) \
+                    or MODEL_ERROR_CODES.intersection(codes or []) or REQUEST_ERROR_CODES.intersection(codes or []):
+                retryable = False
             detail = f"HTTP {status} | کدها: {codes or '—'} | {joined or raw_safe[:160]}"
             if hint:
                 detail += f" | راهنما: {hint}"
-            raise AIError(detail)
+            raise AIError(detail, retryable=retryable)
         return info, payload
 
     # --------------------------------------------------------------------- chat
@@ -387,13 +411,16 @@ class CloudflareAI:
         *,
         max_tokens: Optional[int] = None,
         retry_on_empty: bool = True,
+        max_retries: int = 0,
+        base_delay: float = 1.2,
     ) -> AIResponse:
         """ارسال مکالمه به مدل و برگرداندن پاسخ متنی.
 
-        محافظت‌های واقعی برای مدل‌های استدلالی:
-          * پارامتر مدرن `max_completion_tokens` (و در صورت رد شدن، `max_tokens`).
-          * اگر پاسخ خالی با `finish_reason="length"` برگردد (بودجه صرف استدلال شده)،
-            یک‌بار با بودجه‌ی دوبرابر (تا ``max_retry_budget``) دوباره تلاش می‌شود.
+        محافظت‌ها:
+          * پارامتر مدرن `max_completion_tokens` (در صورت رد شدن، تلاش با `max_tokens`).
+          * تلاش مجدد خودکار با backoff نمایی برای خطاهای موقت (شبکه، ظرفیت، 5xx، 408).
+          * برای خطاهای قطعی (احراز هویت، مدل، درخواست بزرگ، سهمیه) ری‌ترای انجام نمی‌شود.
+          * اگر پاسخ خالی با `finish_reason="length"` برگردد، یک‌بار با بودجه‌ی دوبرابر.
         """
         if not self.configured:
             raise AIConfigError(
@@ -401,14 +428,47 @@ class CloudflareAI:
             )
 
         budget = int(max_tokens or self.max_output_tokens)
+        last_error: Optional[BaseException] = None
+        attempts = max(1, int(max_retries) + 1)
 
-        # ۱) تلاش با پارامتر مدرن (مستندات این مدل)؛ در صورت رد شدن، نام قدیمی
+        for attempt in range(attempts):
+            try:
+                return await self._chat_once(messages, budget, retry_on_empty=retry_on_empty)
+            except AIQuotaExceeded:
+                raise                     # سهمیه: قطعی، فوراً بالا برود
+            except AIConfigError:
+                raise                     # تنظیمات: قطعی
+            except AIError as exc:
+                last_error = exc
+                if not exc.retryable or attempt >= attempts - 1:
+                    raise
+                delay = min(base_delay * (2 ** attempt), 8.0)
+                log.warning("خطای موقت AI (تلاش %s/%s): %s → ری‌ترای پس از %.1fs",
+                            attempt + 1, attempts, exc, delay)
+                await asyncio.sleep(delay)
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+                if attempt >= attempts - 1:
+                    raise
+                delay = min(base_delay * (2 ** attempt), 8.0)
+                log.warning("استثنای نامنتظره AI (تلاش %s/%s): %s → ری‌ترای پس از %.1fs",
+                            attempt + 1, attempts, exc, delay)
+                await asyncio.sleep(delay)
+
+        # به این خط نباید برسیم؛ برای type-checker
+        assert last_error is not None
+        raise last_error  # pragma: no cover
+
+    async def _chat_once(self, messages, budget, *, retry_on_empty: bool) -> AIResponse:
+        """یک تلاش کامل برای ارسال به API (با هندل تغییر پارامتر و بودجه)."""
+        # ۱) تلاش با پارامتر مدرن؛ در صورت رد شدن، نام قدیمی
         try:
             _info, raw = await self._post(messages, budget, "max_completion_tokens")
+            field_name = "max_completion_tokens"
         except AIError as exc:
             message = str(exc).lower()
             field_rejected = (
-                "max_completion_tokens" in message
+                ("max_completion_tokens" in message and "invalid" in message)
                 or ("max_tokens" in message
                     and any(w in message for w in ("invalid", "unknown", "unexpected", "unsupported")))
             )
@@ -416,18 +476,19 @@ class CloudflareAI:
                 raise
             log.warning("پارامتر max_completion_tokens پذیرفته نشد؛ تلاش با max_tokens")
             _info, raw = await self._post(messages, budget, "max_tokens")
+            field_name = "max_tokens"
 
         text = extract_text(raw)
         finish = extract_finish_reason(raw)
         reasoning = extract_reasoning(raw)
         usage = extract_usage(raw)
 
-        # ۲) پاسخ خالی با پایان «length» ⇒ بودجه صرف استدلال شده (رفتار مستندشده‌ی GLM)
+        # ۲) پاسخ خالی با پایان «length» ⇒ بودجه صرف استدلال/طولانی‌تر خروجی شده
         if (not (text or "").strip()) and finish == "length" and retry_on_empty:
             bigger = min(max(budget * 2, 256), int(self.max_retry_budget))
             if bigger > budget:
                 log.info("پاسخ خالی با finish_reason=length؛ تلاش دوباره با بودجه‌ی %s", bigger)
-                _info, raw = await self._post(messages, bigger, "max_completion_tokens")
+                _info, raw = await self._post(messages, bigger, field_name)
                 text = extract_text(raw)
                 finish = extract_finish_reason(raw)
                 reasoning = extract_reasoning(raw)
@@ -438,18 +499,20 @@ class CloudflareAI:
             return AIResponse(text=text.strip(), usage=usage, finish_reason=finish,
                               reasoning=reasoning)
 
-        # ۳) خالی، ولی مدل استدلال تولید کرده و «طبیعی» تمام شده ⇒ همان استدلال برگردانده می‌شود
+        # ۳) خالی ولی مدل استدلال تولید کرده و «طبیعی» تمام شده ⇒ همان استدلال
         if (reasoning or "").strip() and finish != "length":
             return AIResponse(text=reasoning.strip(), usage=usage, finish_reason=finish,
                               reasoning=reasoning, used_reasoning=True)
 
-        # ۴) واقعاً چیزی تولید نشده → خطای دقیق و قابل‌اقدام
+        # ۴) واقعاً چیزی تولید نشده → خطای قابل‌تلاش (پاسخ خالی سرور)
         if finish == "length":
             raise AIError(
-                f"مدل پاسخی متنی تولید نکرد: بودجه‌ی خروجی ({budget} توکن) صرف استدلال مدل شد "
-                f"(finish_reason=length). مقدار ACOD_AI_MAX_OUTPUT_TOKENS را بالا ببرید."
+                f"مدل پاسخی متنی تولید نکرد: بودجه‌ی خروجی ({budget} توکن) کافی نبود "
+                f"(finish_reason=length). مقدار ACOD_AI_MAX_OUTPUT_TOKENS را بالا ببرید.",
+                retryable=True,
             )
         raise AIError(
             f"پاسخ خالی از مدل (finish_reason={finish or 'نامشخص'}"
-            f"{'، استدلال داشت' if reasoning else ''})."
+            f"{'، استدلال داشت' if reasoning else ''}).",
+            retryable=True,
         )

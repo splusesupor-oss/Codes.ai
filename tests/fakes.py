@@ -175,7 +175,7 @@ class FakeAI:
     def configured(self) -> bool:
         return True
 
-    async def chat(self, messages, *, max_tokens=None):
+    async def chat(self, messages, *, max_tokens=None, **_kw):
         self.calls.append(messages)
         if self.error is not None:
             raise self.error

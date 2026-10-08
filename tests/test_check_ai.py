@@ -81,7 +81,8 @@ class TestConfigReport(unittest.TestCase):
         preview = check_ai.endpoint_preview(make_cfg())
         self.assertIn("<ACCOUNT_ID>", preview)
         self.assertNotIn(ACCOUNT, preview)
-        self.assertIn("@cf/zai-org/glm-4.7-flash", preview)
+        import config as _cfg_mod
+        self.assertIn(_cfg_mod.AI_MODEL, preview)
 
 
 class TestLiveCheck(unittest.TestCase):

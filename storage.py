@@ -416,22 +416,26 @@ class OwnerStore:
             ).fetchone()
         return int(row["requests"]) if row else 0
 
+    def ai_used_quota(self, chat_id: int, day: str) -> int:
+        """تعداد درخواست‌های مصرف‌شده امروز برای یک گروه (بدون تغییر)."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT requests FROM ai_usage WHERE chat_id = ? AND day = ?",
+                (int(chat_id), day),
+            ).fetchone()
+            return int(row["requests"]) if row else 0
+
     def ai_consume_quota(self, chat_id: int, day: str, limit: int) -> bool:
         """مصرف یک واحد از سهمیه‌ی روزانه‌ی همان گروه — اتمیک.
 
         Returns:
-            True اگر سهمیه داشت و مصرف شد؛ False اگر سهمیه‌ی روز تمام شده بود
-            (در این حالت هیچ درخواستی نباید به API ارسال شود).
+            True اگر سهمیه داشت و مصرف شد؛ False اگر سهمیه‌ی روز تمام شده بود.
         """
         chat_id, limit = int(chat_id), int(limit)
         with self._lock:
             try:
                 self._conn.execute("BEGIN IMMEDIATE")
-                row = self._conn.execute(
-                    "SELECT requests FROM ai_usage WHERE chat_id = ? AND day = ?",
-                    (chat_id, day),
-                ).fetchone()
-                used = int(row["requests"]) if row else 0
+                used = self.ai_used_quota(chat_id, day)
                 if used >= limit:
                     self._conn.execute("ROLLBACK")
                     return False

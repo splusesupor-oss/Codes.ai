@@ -283,7 +283,7 @@ class TestTypingIndicator(AITestCase):
         class SlowFakeAI:
             configured = True
 
-            async def chat(self_inner, messages, *, max_tokens=None):
+            async def chat(self_inner, messages, *, max_tokens=None, **_kw):
                 await asyncio.sleep(0)  # yield به event loop تا _run typing یک دور بزند
                 from ai_client import AIResponse
                 return AIResponse(text="پاسخ")
@@ -317,7 +317,7 @@ class TestTypingIndicator(AITestCase):
 
         class ErrorFakeAI:
             configured = True
-            async def chat(self_inner, messages, *, max_tokens=None):
+            async def chat(self_inner, messages, *, max_tokens=None, **_kw):
                 await asyncio.sleep(0)
                 raise AIError("شکست ساختگی تست")
 
@@ -340,7 +340,7 @@ class TestTypingIndicator(AITestCase):
 
         class QuotaFakeAI:
             configured = True
-            async def chat(self_inner, messages, *, max_tokens=None):
+            async def chat(self_inner, messages, *, max_tokens=None, **_kw):
                 await asyncio.sleep(0)
                 raise AIQuotaExceeded("quota fake")
 
@@ -369,7 +369,7 @@ class TestTypingIndicator(AITestCase):
         class LongAI:
             configured = True
 
-            async def chat(self_inner, messages, *, max_tokens=None):
+            async def chat(self_inner, messages, *, max_tokens=None, **_kw):
                 await asyncio.sleep(0.05)
                 from ai_client import AIResponse
                 return AIResponse(text="پاسخ طولانی")
@@ -890,8 +890,9 @@ class TestSafety(AITestCase):
 
         self.assertEqual(self.ai_calls(), 0)
 
-    def test_17f_ai_model_default_matches_requested_model(self):
-        self.assertEqual(self.cfg.ai_model, "@cf/zai-org/glm-4.7-flash")
+    def test_17f_ai_model_default_matches_module_default(self):
+        from config import AI_MODEL
+        self.assertEqual(self.cfg.ai_model, AI_MODEL)
 
     def test_17h_output_budget_has_reasoning_headroom(self):
         """مدل استدلالی است؛ بودجه‌ی پیش‌فرض باید به‌اندازه‌ی کافی برای پاسخ هم جا داشته باشد."""

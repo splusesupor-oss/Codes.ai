@@ -140,6 +140,8 @@ class GroupAI:
             timeout=cfg.ai_timeout,
             max_output_tokens=cfg.ai_max_output_tokens,
         )
+        self._retry_max = int(getattr(cfg, "ai_retry_max", 3))
+        self._retry_base_delay = float(getattr(cfg, "ai_retry_base_delay", 1.2))
         self._now = now_provider or _dt.datetime.now
         # تاریخچه‌ی کوتاه هر گروه (فقط در حافظه؛ با ری‌استارت پاک می‌شود)
         self._history: "OrderedDict[int, deque]" = OrderedDict()
@@ -299,8 +301,11 @@ class GroupAI:
             return
 
         # سهمیه‌ی روزانه (per-group و بر اساس روز UTC) — قبل از هر درخواست شبکه‌ای
+        # (فقط چک می‌کنیم؛ مصرف واقعی بعد از دریافت پاسخ موفق ثبت می‌شود تا
+        # خطاها و retryها سهمیه را هدر ندهند)
         day = self._day()
-        if not self.store.ai_consume_quota(chat_id, day, self.cfg.ai_daily_quota):
+        limit = int(self.cfg.ai_daily_quota)
+        if self.store.ai_used_quota(chat_id, day) >= limit:
             log.warning("سهمیه روزانه AI گروه %s تمام شده است (%s)", chat_id, day)
             await self._reply(client, event, brand.AI_QUOTA_TEXT)
             return
@@ -324,7 +329,11 @@ class GroupAI:
         try:
             messages = self._build_messages(chat_id, text)
             try:
-                response = await self.ai.chat(messages)
+                response = await self.ai.chat(
+                    messages,
+                    max_retries=self._retry_max,
+                    base_delay=self._retry_base_delay,
+                )
             except AIQuotaExceeded as exc:
                 log.warning("Cloudflare سهمیه را تمام‌شده اعلام کرد: %s", exc)
                 self.store.ai_exhaust_quota(chat_id, day, self.cfg.ai_daily_quota)
@@ -338,6 +347,12 @@ class GroupAI:
                 log.error("خطای AI: %s", exc)
                 await self._reply(client, event, brand.AI_ERROR_TEXT)
                 return
+
+            # پاسخ موفق: حالا یک واحد سهمیه مصرف می‌شود
+            # (اگر دقیقاً در این فاصله یک درخواست هم‌زمانِ دیگر سهمیه را پر کرده باشد،
+            #  ai_consume_quota خودداری می‌کند؛ پاسخ همین الان ساخته شده پس ارسال می‌شود
+            #  و درخواست بعدی سهمیه را خالی می‌بیند — فقظ شمارش اندکی ارفاق دارد که مطلوب است)
+            self.store.ai_consume_quota(chat_id, day, limit)
 
             self._push_history(chat_id, "user", text)
             self._push_history(chat_id, "assistant", response.text)

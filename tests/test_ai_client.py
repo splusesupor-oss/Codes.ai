@@ -376,7 +376,10 @@ class TestEnvFile(unittest.TestCase):
                 self.assertEqual(cfg.kodrez_command, "کدرز")
                 self.assertEqual(cfg.pv_count_command, "تعداد اعضا")
                 self.assertEqual(cfg.ai_daily_quota, 5000)
-                self.assertEqual(cfg.ai_model, "@cf/zai-org/glm-4.7-flash")
+                # نکته: ai_model در Config() ثابت است (default_factory ندارد)؛
+                # مقدار آن را با ثابت پیش‌فرض ماژول چک می‌کنیم تا تست به مدل خاصی وابسته نباشد.
+                import config as _cfg_mod
+                self.assertEqual(cfg.ai_model, _cfg_mod.AI_MODEL)
             finally:
                 for k, v in old.items():
                     if v is None:
