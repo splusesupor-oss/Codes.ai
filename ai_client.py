@@ -45,7 +45,7 @@ from typing import Any, Optional
 log = logging.getLogger("acod.ai.client")
 
 API_BASE = "https://api.cloudflare.com/client/v4/accounts"
-DEFAULT_MODEL = "@cf/zai-org/glm-4.7-flash"
+DEFAULT_MODEL = "@cf/meta/llama-3.1-8b-instruct-fp8-fast"
 
 # --- دسته‌بندی کدهای خطا (طبق جدول رسمی Workers AI + کدهای احراز هویتِ مشاهده‌شده) ---
 QUOTA_ERROR_CODES = {3036, 4006, 3037}          # سهمیه‌ی روزانه تمام شده است
@@ -338,11 +338,7 @@ class CloudflareAI:
 
         Returns: ``(APIStatus, payload)`` — خطاهای سخت پرتاب می‌شوند.
         """
-        body: dict[str, Any] = {
-            "messages": messages,
-            field_name: int(budget),
-            "temperature": 0.35,
-        }
+        body: dict[str, Any] = {"messages": messages, field_name: int(budget)}
         headers = {
             "Authorization": f"Bearer {self.api_token}",
             "Content-Type": "application/json",
@@ -440,11 +436,12 @@ class CloudflareAI:
         budget = int(max_tokens or self.max_output_tokens)
         last_error: Optional[BaseException] = None
         attempts = max(1, int(max_retries) + 1)
+        active_model = model
 
         for attempt in range(attempts):
             try:
                 return await self._chat_once(
-                    messages, budget, model=model, retry_on_empty=retry_on_empty
+                    messages, budget, model=active_model, retry_on_empty=retry_on_empty
                 )
             except AIQuotaExceeded:
                 raise                     # سهمیه: قطعی، فوراً بالا برود
@@ -452,6 +449,13 @@ class CloudflareAI:
                 raise                     # تنظیمات: قطعی
             except AIError as exc:
                 last_error = exc
+                # اگر مدل درخواستی با خطای ناموجود بودن یا پلن پولی روبرو شد، به مدل پیش‌فرض سوئیچ کن
+                if active_model and active_model != self.model:
+                    err_msg = str(exc).lower()
+                    if any(k in err_msg for k in ("not found", "invalid model", "paid", "5035", "5007", "3042")):
+                        log.warning("مدل %s در دسترس نیست؛ سوئیچ به مدل پایدار %s", active_model, self.model)
+                        active_model = self.model
+                        continue
                 if not exc.retryable or attempt >= attempts - 1:
                     raise
                 delay = min(base_delay * (2 ** attempt), 8.0)
