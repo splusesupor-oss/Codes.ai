@@ -261,9 +261,9 @@ class TestAdFilterAndRepliedUser(unittest.TestCase):
         self.ai.record_group_message(self.group_id, "@target_member", "پیام ۱ هدف", user_id=target_user_id)
         self.ai.record_group_message(self.group_id, "@target_member", "پیام ۲ هدف", user_id=target_user_id)
 
-        # مالک روی پیام این کاربر ریپلای کرده و از AI سوال می‌پرسد
+        # مالک روی پیام این کاربر ریپلای کرده و با ذکر «ai» از هوش مصنوعی سوال می‌پرسد
         query_ev = FakeEvent(
-            "نام کاربری این کاربر چیه و تحلیل رفتاریش چطوره؟",
+            "ai نام کاربری این کاربر چیه و تحلیل رفتاریش چطوره؟",
             sender_id=self.owner_id,
             chat_id=self.group_id,
             reply_to=replied_msg,
@@ -289,7 +289,7 @@ class TestAdFilterAndRepliedUser(unittest.TestCase):
         replied_msg = FakeReplyMessage(sender_id=other_user, text="سلام", msg_id=50)
 
         query_ev = FakeEvent(
-            "سلام چطوری؟",
+            "ai سلام چطوری؟",
             sender_id=unauth_user,
             chat_id=self.group_id,
             reply_to=replied_msg,
@@ -300,3 +300,68 @@ class TestAdFilterAndRepliedUser(unittest.TestCase):
         run(self.core.on_new_message(self.client, query_ev))
         # نباید هیچ پیامی (حتی خطای عدم دسترسی) فرستاده شود
         self.assertEqual(self.client.text_messages(), [])
+
+    def test_12_authorized_user_replying_without_ai_stays_silent(self):
+        target_user_id = 888
+        replied_msg = FakeReplyMessage(
+            sender_id=target_user_id,
+            text="سلام به همه",
+            msg_id=123,
+        )
+        # مالک بدون ذکر ai به این کاربر جواب می‌دهد (چت عادی)
+        normal_reply_ev = FakeEvent(
+            "سلام، خوش آمدید به گروه",
+            sender_id=self.owner_id,
+            chat_id=self.group_id,
+            reply_to=replied_msg,
+            msg_id=125,
+        )
+        self.client.clear_requests()
+        run(self.core.on_new_message(self.client, normal_reply_ev))
+        # هوش مصنوعی نباید در چت معمولی بین افراد گروه دخالت کند
+        self.assertEqual(self.client.text_messages(), [])
+
+    def test_13_system_prompt_includes_fonts_prompts_and_group_advice(self):
+        import brand
+        prompt = brand.AI_SYSTEM_PROMPT
+        self.assertIn("فونت", prompt)
+        self.assertIn("پرامپت", prompt)
+        self.assertIn("عکس", prompt)
+        self.assertIn("بهبود گروه", prompt)
+        self.assertIn("Display Name", prompt)
+        self.assertIn("تحلیل", prompt)
+        self.assertIn("کدنویسی", prompt)
+
+    def test_14_model_profiles_have_high_token_limits(self):
+        from models import MODEL_PROFILES
+        for pid, p in MODEL_PROFILES.items():
+            self.assertGreaterEqual(p.max_output_tokens, 2048, f"مدل {pid} سقف توکن خروجی پایینی دارد")
+
+    def test_15_ai_query_cleans_ai_prefix_and_reads_display_name(self):
+        target_user_id = 999
+        target_sender = FakeSenderUser(target_user_id, username=None, first_name="محسن", last_name="رضایی")
+        replied_msg = FakeReplyMessage(
+            sender_id=target_user_id,
+            text="سلام به همه دوستان",
+            msg_id=130,
+            sender=target_sender,
+        )
+        query_ev = FakeEvent(
+            "ai این کاربر چرا ساکته",
+            sender_id=self.owner_id,
+            chat_id=self.group_id,
+            reply_to=replied_msg,
+            msg_id=131,
+        )
+        self.client.clear_requests()
+        run(self.core.on_new_message(self.client, query_ev))
+
+        self.assertGreater(len(self.ai_client.calls), 0)
+        messages = self.ai_client.calls[-1]
+        system_content = messages[0]["content"]
+        user_prompt = messages[-1]["content"]
+
+        # متن پرسش باید پاکسازی شده و پیشوند ai برداشته شده باشد
+        self.assertEqual(user_prompt, "این کاربر چرا ساکته")
+        # نام نمایشی کاربر در کانتکست سیستم وجود داشته باشد
+        self.assertIn("محسن رضایی", system_content)

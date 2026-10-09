@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import datetime as _dt
 import logging
+import re
 import uuid
 from collections import OrderedDict, deque
 from dataclasses import dataclass
@@ -397,18 +398,18 @@ class GroupAI:
             group_info_lines.append("\n".join(rec_lines))
 
         if target_user_info:
-            target_lines = ["اطلاعات کاربری که پیام روی او ریپلای شده است (در صورت سوال درباره این کاربر، از این اطلاعات برای پاسخ دقیق استفاده کن):"]
+            target_lines = ["اطلاعات کاربری که پیام روی او ریپلای شده است (در صورت سوال درباره این کاربر، از این اطلاعات برای پاسخ دقیق و تحلیل استفاده کن):"]
             t_name = target_user_info.get("display_name") or "کاربر"
             t_user = target_user_info.get("username")
             t_id = target_user_info.get("user_id")
             t_msg = target_user_info.get("replied_message")
             t_recent = target_user_info.get("recent_messages")
 
-            target_lines.append(f"• نام نمایشی کاربر: {t_name}")
+            target_lines.append(f"• نام نمایشی کاربر (Display Name): {t_name}")
             u_handle = f"@{t_user.lstrip('@')}" if t_user else "ندارد"
-            target_lines.append(f"• نام کاربری (یوزرنیم): {u_handle}")
+            target_lines.append(f"• نام کاربری (Username): {u_handle}")
             if t_id:
-                target_lines.append(f"• شناسه عددی: {t_id}")
+                target_lines.append(f"• شناسه عددی (User ID): {t_id}")
             if t_msg:
                 target_lines.append(f"• متن پیامی که روی آن ریپلای شده: «{t_msg}»")
             if t_recent:
@@ -582,12 +583,16 @@ class GroupAI:
 
         reply_is_mine = bool(getattr(reply_msg, "out", False))
         reply_sender_id = int(getattr(reply_msg, "sender_id", 0) or 0)
-        is_reply_to_bot = bool(reply_is_mine or (my_id and reply_sender_id == my_id))
+        is_reply_to_bot = bool(
+            reply_is_mine
+            or (my_id and reply_sender_id == my_id)
+            or (reply_sender_id and reply_sender_id == sender_id)
+        )
         target_user_info = None
 
         if not is_reply_to_bot:
-            # اگر ریپلای روی پیام سایر اعضا باشد، فقط در صورتی پردازش شود که فرستنده
-            # مالک گروه یا کاربر مجاز باشد که می‌خواهد درباره این کاربر از هوش مصنوعی سوال بپرسد
+            # اگر ریپلای روی پیام سایر اعضا باشد، فقط در صورتی پردازش شود که:
+            # ۱) فرستنده پیام، مالک گروه یا کاربر مجاز باشد
             allowed = (
                 self.store.ai_is_allowed(chat_id, sender_id)
                 or (self.cfg.ai_owner_always_allowed and self._is_owner(sender_id))
@@ -596,10 +601,30 @@ class GroupAI:
             if not allowed:
                 return
 
+            # ۲) پیام ارسالی صراحتاً با پیشوند هوش مصنوعی آغاز شده باشد (مثال: «ai تحلیل رفتار کاربر» یا «ai این کاربر چرا ساکته»)
+            ai_call_match = re.match(
+                r"^(?:ai|هوش\s*مصنوعی|ربات)(?:[\s:،,–\-]+(.*)|$)",
+                text.strip(),
+                re.IGNORECASE | re.DOTALL,
+            )
+            if not ai_call_match:
+                # اگر کاربر مجاز بدون صدا زدن هوش مصنوعی در حال گفت‌وگوی عادی با اعضاست، ربات ساکت بماند
+                return
+
+            clean_query = (ai_call_match.group(1) or "").strip()
+            if clean_query:
+                text = clean_query
+
             target_id = reply_sender_id
             target_sender = getattr(reply_msg, "sender", None)
             target_username = getattr(target_sender, "username", None) if target_sender else None
-            target_label = self._user_label(reply_msg, target_id, "کاربر")
+
+            # استخراج نام نمایشی دقیق
+            first_name = (getattr(target_sender, "first_name", "") or "").strip()
+            last_name = (getattr(target_sender, "last_name", "") or "").strip()
+            full_display = f"{first_name} {last_name}".strip()
+            target_label = full_display or self._user_label(reply_msg, target_id, "کاربر")
+
             target_text = (getattr(reply_msg, "raw_text", "") or "").strip()
 
             recent_msgs = self.get_recent_group_messages(chat_id)

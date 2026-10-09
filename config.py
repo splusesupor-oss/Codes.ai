@@ -122,7 +122,7 @@ AI_MAX_ALLOWED_USERS = 3
 AI_QUOTA_TIMEZONE = "Asia/Tehran"
 
 # محدودیت‌های مصرف برای هر درخواست
-AI_MAX_OUTPUT_TOKENS = 1024
+AI_MAX_OUTPUT_TOKENS = 4096
 AI_MAX_INPUT_CHARS = 800            # طول متن ورودی هر پیام کاربر (مازاد بریده می‌شود)
 AI_HISTORY_PAIRS = 2                # چند جفت گفت‌وگو در حافظه نگه داشته شود (۰ = بدون تاریخچه)
 AI_TIMEOUT = 22                     # ثانیه — کوتاه‌تر از قبل تا پاسخ سریع‌تر یا زودتر ری‌ترای کند
