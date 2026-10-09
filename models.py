@@ -57,10 +57,10 @@ MODEL_PROFILES: dict[int, ModelProfile] = {
         id=3,
         name="دستیار پیشرفته استدلال و کدنویسی",
         english_name="Advanced Reasoning and Coding Assistant",
-        model_id="@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
-        max_output_tokens=2560,
-        timeout=55.0,
-        description="استدلال عمیق منطقی، حل مسائل پیچیده و کدنویسی تخصصی (تگ‌های تفکر به صورت خودکار فیلتر می‌شوند).",
+        model_id="@cf/qwen/qwen2.5-coder-32b-instruct",
+        max_output_tokens=2048,
+        timeout=45.0,
+        description="استدلال عمیق، حل مسائل تحلیلی و کدنویسی تخصصی بدون مونولوگ ذهنی و با پاسخ‌دهی مستقیم انسانی.",
     ),
 }
 

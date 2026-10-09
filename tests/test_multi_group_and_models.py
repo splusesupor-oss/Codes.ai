@@ -171,7 +171,7 @@ class TestMultiGroupAndModels(unittest.TestCase):
 
         last_resp = self.client.requests[-1].message
         self.assertIn("مدل 3", last_resp)
-        self.assertIn("deepseek-r1-distill-qwen-32b", last_resp)
+        self.assertIn(MODEL_PROFILES[3].model_id, last_resp)
 
     # -----------------------------------------------------------------------
     # ۵) اجرای درخواست در مدل انتخابی گروه
