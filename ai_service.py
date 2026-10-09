@@ -549,16 +549,20 @@ class GroupAI:
                 base_delay=self._retry_base_delay,
             )
 
+            # تصفیه تگ‌های تفکر مدل‌های استدلالی مانند DeepSeek-R1 (<think>...</think>)
+            cleaned_text = brand.clean_model_output(response.text)
+            reply_text = cleaned_text if cleaned_text else response.text
+
             # مصرف سهمیه گروه فقط پس از دریافت پاسخ موفق
             day = self._day()
             limit = self.store.get_daily_quota(self.cfg.ai_daily_quota, chat_id=req.chat_id)
             self.store.ai_consume_quota(req.chat_id, day, limit)
 
-            # ثبت تاریخچه گفت‌وگو منحصراً برای همین کاربر در همین گروه
+            # ثبت تاریخچه گفت‌وگو منحصراً برای همین کاربر در همین گروه (با متن تمیز)
             self._push_history(req.chat_id, req.sender_id, "user", req.text)
-            self._push_history(req.chat_id, req.sender_id, "assistant", response.text)
+            self._push_history(req.chat_id, req.sender_id, "assistant", reply_text)
 
-            for chunk in brand.chunk_lines(response.text.split("\n"), self.cfg.max_message_chars):
+            for chunk in brand.chunk_lines(reply_text.split("\n"), self.cfg.max_message_chars):
                 report = await self.sender.send_text(
                     req.client,
                     req.peer,

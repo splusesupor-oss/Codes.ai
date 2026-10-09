@@ -445,6 +445,44 @@ class TestMultiGroupAndModels(unittest.TestCase):
         self.assertIn("𝗘𝘅𝗽𝗶𝗿𝗮𝘁𝗶𝗼𝗻 𝗱𝗮𝘁𝗲⏱", msg)
         self.assertIn("⏳ زمان باقیمانده:", msg)
 
+    # -----------------------------------------------------------------------
+    # ۱۹) فیلتر تگ‌های تفکر مدل‌های استدلالی مانند DeepSeek-R1 (<think>...</think>)
+    # -----------------------------------------------------------------------
+    def test_clean_model_output_strips_think_tags(self):
+        """تگ‌های تفکر <think> و استدلال‌های داخلی مدل ۳ باید کاملاً حذف شوند."""
+        raw_output = (
+            "<think>\n"
+            "خب، من باید به کاربر در مورد زبان برنامهنویسی روباه بگویم...\n"
+            "</think>\n"
+            "سلام! روباه یک بستر برنامه‌نویسی برای سروش پلاس است."
+        )
+        cleaned = brand.clean_model_output(raw_output)
+        self.assertEqual(cleaned, "سلام! روباه یک بستر برنامه‌نویسی برای سروش پلاس است.")
+
+        # حالت تگ بدون بسته شدن
+        unclosed = "<think>فکر کردن ناتمام..."
+        self.assertEqual(brand.clean_model_output(unclosed), "فکر کردن ناتمام...")
+
+    # -----------------------------------------------------------------------
+    # ۲۰) ارتقای پرامپت جهت درک اصطلاحات عامیانه و عدم توهم
+    # -----------------------------------------------------------------------
+    def test_system_prompt_instructs_colloquial_slang_and_no_hallucinations(self):
+        """پرامپت باید صراحتاً اصطلاحات عامیانه (مثل سیکتیر) و منع توهم را شامل شود."""
+        prompt = brand.AI_SYSTEM_PROMPT
+        self.assertIn("سیکتیر", prompt)
+        self.assertIn("توهم", prompt)
+        self.assertIn("نرم‌افزار", prompt)
+        self.assertIn("<think>", prompt)
+
+    # -----------------------------------------------------------------------
+    # ۲۱) بررسی مشخصات مدل ۲ پرچمدار و پرسرعت (Llama 3.3 70B)
+    # -----------------------------------------------------------------------
+    def test_model_2_is_llama_33_70b_fast(self):
+        """مدل ۲ باید مدل پایدار و پرسرعت Llama 3.3 70B FP8 باشد."""
+        p2 = MODEL_PROFILES[2]
+        self.assertIn("llama-3.3-70b-instruct-fp8-fast", p2.model_id)
+        self.assertGreaterEqual(p2.max_output_tokens, 2048)
+
 
 if __name__ == "__main__":
     unittest.main()

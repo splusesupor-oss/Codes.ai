@@ -38,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -507,7 +508,20 @@ class CloudflareAI:
                 budget = bigger
 
         if (text or "").strip():
-            return AIResponse(text=text.strip(), usage=usage, finish_reason=finish,
+            # استخراج استدلال از داخل تگ think در صورت نبود reasoning اختصاصی
+            if not reasoning and re.search(r"(?is)<\s*think\s*>", text):
+                m = re.search(r"(?is)<\s*(?:think|thought)\s*>(.*?)<\s*/\s*(?:think|thought)\s*>", text)
+                if m:
+                    reasoning = m.group(1).strip()
+            # حذف تگ‌های think از متن پاسخ نهایی
+            cleaned_text = re.sub(r"(?is)<\s*(?:think|thought)\s*>.*?<\s*/\s*(?:think|thought)\s*>", "", text).strip()
+            if not cleaned_text:
+                parts = re.split(r"(?is)<\s*/\s*(?:think|thought)\s*>", text)
+                if len(parts) > 1 and parts[-1].strip():
+                    cleaned_text = parts[-1].strip()
+                else:
+                    cleaned_text = re.sub(r"(?is)^\s*<\s*(?:think|thought)\s*>", "", text).strip()
+            return AIResponse(text=cleaned_text or text.strip(), usage=usage, finish_reason=finish,
                               reasoning=reasoning)
 
         # ۳) خالی ولی مدل استدلال تولید کرده و «طبیعی» تمام شده ⇒ همان استدلال
