@@ -55,6 +55,7 @@ class FakeClient:
         participants: Optional[dict[int, list]] = None,
     ):
         self.all_requests: list = []
+        self.deleted_messages: list = []
         self.reject_blockquote = reject_blockquote
         self.reject_all = reject_all
         self._next_id = 100
@@ -95,6 +96,10 @@ class FakeClient:
     async def get_participants(self, chat, filter=None):
         chat_id = int(chat)
         return self.participants.get(chat_id, [])
+
+    async def delete_messages(self, entity, message_ids, revoke=True):
+        self.deleted_messages.append((entity, message_ids))
+        return []
 
     async def __call__(self, request, ordered=False):
         if self._side_effect is not None:
@@ -157,6 +162,7 @@ class FakeClient:
 
     def clear_requests(self):
         self.all_requests.clear()
+        self.deleted_messages.clear()
 
     def typing_peer_ids(self):
         ids = []
@@ -198,11 +204,12 @@ class FakeReplyMessage:
         username: Optional[str] = None,
         display_name: str = "User",
         out: bool = False,
+        sender: Optional[Any] = None,
     ):
         self.sender_id = sender_id
         self.raw_text = text
         self.id = msg_id
-        self.sender = FakeSender(sender_id, first_name=display_name, username=username)
+        self.sender = sender or FakeSender(sender_id, first_name=display_name, username=username)
         self.out = out
 
 

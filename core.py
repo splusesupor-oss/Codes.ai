@@ -203,6 +203,33 @@ def match_menu_option(text: str) -> Optional[str]:
     return None
 
 
+RE_FILTER_ADD = re.compile(r"^(?:flter|filter)\s+(.+)$", re.IGNORECASE)
+RE_FILTER_REMOVE = re.compile(r"^x\s+(.+)$", re.IGNORECASE)
+RE_FILTER_LIST = re.compile(r"^(?:list\s+(?:flter|filter)|لیست\s+فیلتر)$", re.IGNORECASE)
+
+
+def match_filter_command(text: str) -> Optional[tuple[str, str]]:
+    """تشخیص دستورات فیلتر تبلیغات گروه:
+
+    - 'Flter <word>' / 'filter <word>' -> ('add', <word>)
+    - 'x <word>'                       -> ('remove', <word>)
+    - 'list flter' / 'list filter'     -> ('list', '')
+    """
+    if not text or not text.strip():
+        return None
+    raw = text.strip()
+    m_add = RE_FILTER_ADD.match(raw)
+    if m_add:
+        return ("add", m_add.group(1).strip())
+    m_rem = RE_FILTER_REMOVE.match(raw)
+    if m_rem:
+        return ("remove", m_rem.group(1).strip())
+    m_lst = RE_FILTER_LIST.match(raw)
+    if m_lst:
+        return ("list", "")
+    return None
+
+
 def pv_user_label(user, unknown_name: str = "کاربر بدون نام") -> str:
     username = (getattr(user, "username", None) or "").strip().lstrip("@")
     if username:
@@ -248,6 +275,7 @@ class BotCore:
         self.sender = sender or BrandSender(cfg)
         self.ai = ai or GroupAI(cfg, store, self.sender)
         self._now_provider = now_provider
+        self._ad_processed_ids: set[tuple[int, int]] = set()
 
     def _now(self, tz=None):
         if self._now_provider is not None:
@@ -286,7 +314,9 @@ class BotCore:
                         self.store.update_group_name(chat_id, t)
 
             # ثبت پیام جاری در بافر پیام‌های اخیر هوش مصنوعی جهت آگاهی از گفت‌وگوها و تحلیل گروه
-            # فقط پیام‌های عادی گروه بین اعضا (نه دستورات و نه ریپلای‌های اختصاصی به ربات)
+            # فقط پیام‌های عادی گروه بین اعضا (نه دستورات، نه تبلیغات و نه ریپلای‌های اختصاصی به ربات)
+            filter_cmd = match_filter_command(text)
+            is_filter_cmd = filter_cmd is not None
             is_cmd = bool(
                 match_global_config_command(text)
                 or match_ai_command(text, self.cfg)
@@ -297,8 +327,12 @@ class BotCore:
                 or is_ai_single_command(norm_text)
                 or is_tery_ai_command(norm_text)
                 or is_expiration_list_command(norm_text)
+                or is_filter_cmd
             )
-            if text and self.ai and not getattr(event, "is_reply", False) and not is_cmd:
+            filtered_words = self.store.get_filtered_words(chat_id)
+            is_ad = bool(filtered_words and brand.contains_filtered_word(text, filtered_words))
+
+            if text and self.ai and not getattr(event, "is_reply", False) and not is_cmd and not is_ad:
                 sender_label = self.ai._user_label(event, sender_id or 0, "کاربر")
                 self.ai.record_group_message(chat_id, sender_label, text, user_id=sender_id or 0)
 
@@ -439,6 +473,42 @@ class BotCore:
             elif command == "kodrez":
                 await self._handle_kodrez(client, event)
             return
+
+        # -------------------------------------------------------------
+        # ک/۱) دستورات فیلتر کلمات تبلیغاتی: Flter / x / list flter
+        # -------------------------------------------------------------
+        if is_group and is_filter_cmd and filter_cmd:
+            is_filter_admin = (
+                self.store.is_owner(sender_id)
+                or self.store.is_registered_bot_owner(sender_id)
+                or self.store.ai_is_allowed(chat_id, sender_id)
+            )
+            if is_filter_admin:
+                cmd_action, cmd_arg = filter_cmd
+                if cmd_action == "add":
+                    await self._handle_filter_add(client, event, chat_id, cmd_arg)
+                    return
+                elif cmd_action == "remove":
+                    await self._handle_filter_remove(client, event, chat_id, cmd_arg)
+                    return
+                elif cmd_action == "list":
+                    await self._handle_filter_list(client, event, chat_id)
+                    return
+            else:
+                log.info("کاربر غیرمجاز %s تلاش کرد دستور فیلتر اجرا کند؛ نادیده گرفته شد.", sender_id)
+                return
+
+        # -------------------------------------------------------------
+        # ک/۲) پایش و حذف تبلیغات و هرزنامه در گروه (Anti-Ad Filter)
+        # -------------------------------------------------------------
+        if is_group and not is_cmd:
+            if filtered_words:
+                is_exempt = self.store.is_owner(sender_id) or self.store.is_registered_bot_owner(sender_id)
+                if not is_exempt:
+                    matched_word = brand.contains_filtered_word(text, filtered_words)
+                    if matched_word:
+                        await self._handle_ad_detected(client, event, chat_id, sender_id)
+                        return
 
         # -------------------------------------------------------------
         # ک) گفت‌وگو با هوش مصنوعی (فقط Reply در گروه فعال)
@@ -612,6 +682,124 @@ class BotCore:
             client, await self._peer_of(event), msg, quote=False,
             reply_to_msg_id=getattr(event, "id", None),
         )
+
+    # ------------------------------------------------------- فیلتر تبلیغات و هرزنامه
+    async def _handle_filter_add(self, client, event, chat_id: int, word: str) -> None:
+        clean_word = word.strip()
+        if not clean_word:
+            return
+        ok = self.store.add_filtered_word(chat_id, clean_word, getattr(event, "sender_id", 0))
+        if ok:
+            text = f"✅ کلمه «{clean_word}» به لیست فیلتر تبلیغات این گروه اضافه شد."
+        else:
+            text = f"کلمه «{clean_word}» از قبل در لیست فیلتر قرار دارد."
+        await self.sender.send_text(
+            client,
+            await self._peer_of(event),
+            text,
+            reply_to_msg_id=getattr(event, "id", None),
+        )
+
+    async def _handle_filter_remove(self, client, event, chat_id: int, word: str) -> None:
+        clean_word = word.strip()
+        if not clean_word:
+            return
+        removed = self.store.remove_filtered_word(chat_id, clean_word)
+        if removed:
+            text = f"✅ کلمه «{clean_word}» از لیست فیلتر تبلیغات این گروه حذف شد."
+        else:
+            text = f"کلمه «{clean_word}» در لیست فیلتر یافت نشد."
+        await self.sender.send_text(
+            client,
+            await self._peer_of(event),
+            text,
+            reply_to_msg_id=getattr(event, "id", None),
+        )
+
+    async def _handle_filter_list(self, client, event, chat_id: int) -> None:
+        words = self.store.get_filtered_words(chat_id)
+        msg_text, entities = brand.build_filter_list_message(words)
+        if entities:
+            await self.sender.send_entities(
+                client,
+                await self._peer_of(event),
+                msg_text,
+                entities,
+                reply_to_msg_id=getattr(event, "id", None),
+            )
+        else:
+            await self.sender.send_text(
+                client,
+                await self._peer_of(event),
+                msg_text,
+                reply_to_msg_id=getattr(event, "id", None),
+            )
+
+    async def _handle_ad_detected(self, client, event, chat_id: int, sender_id: int) -> None:
+        msg_id = getattr(event, "id", 0) or 0
+        dedup_key = (chat_id, msg_id)
+        if dedup_key in self._ad_processed_ids:
+            return
+        self._ad_processed_ids.add(dedup_key)
+        if len(self._ad_processed_ids) > 2000:
+            self._ad_processed_ids.clear()
+
+        # ۱) حذف پیام تبلیغاتی
+        try:
+            del_fn = getattr(client, "delete_messages", None)
+            if callable(del_fn):
+                await del_fn(chat_id, [msg_id])
+        except Exception as exc:
+            log.warning("عدم موفقیت در حذف پیام تبلیغاتی %s: %s", msg_id, exc)
+
+        # ۲) تگ کردن مالک گروه با نام کاربری یا عنوان
+        owner_tag = None
+        meta = self.ai.get_group_metadata(chat_id) if self.ai else {}
+        owner_user = meta.get("owner_user")
+        if owner_user and getattr(owner_user, "username", None):
+            owner_tag = f"@{owner_user.username.lstrip('@')}"
+        elif meta.get("owner_name"):
+            owner_tag = meta.get("owner_name")
+
+        if not owner_tag:
+            reg_owner = self.store.get_registered_bot_owner()
+            if reg_owner:
+                owner_tag = f"@{reg_owner.lstrip('@')}"
+
+        if not owner_tag:
+            owner_rec = self.store.get_owner()
+            if owner_rec and getattr(owner_rec, "username", None):
+                owner_tag = f"@{owner_rec.username.lstrip('@')}"
+            elif owner_rec and getattr(owner_rec, "display_name", None):
+                owner_tag = owner_rec.display_name
+
+        if not owner_tag:
+            owner_tag = self.cfg.owner_username or "@S_pluse_ir"
+
+        peer = await self._peer_of(event)
+        try:
+            await self.sender.send_text(client, peer, owner_tag)
+        except Exception as exc:
+            log.warning("خطا در ارسال تگ مالک گروه: %s", exc)
+
+        # ۳) ارسال پیام هشدار با فرمت مشخص‌شده
+        sender_obj = getattr(event, "sender", None)
+        sender_label = ""
+        if sender_obj and getattr(sender_obj, "username", None):
+            sender_label = f"@{sender_obj.username.lstrip('@')}"
+        elif sender_obj and (getattr(sender_obj, "first_name", None) or getattr(sender_obj, "title", None)):
+            fname = getattr(sender_obj, "first_name", "") or getattr(sender_obj, "title", "")
+            lname = getattr(sender_obj, "last_name", "") or ""
+            sender_label = f"{fname} {lname}".strip()
+
+        if not sender_label:
+            sender_label = self.ai._user_label(event, sender_id, "کاربر") if self.ai else f"کاربر {sender_id}"
+
+        warn_text, entities = brand.build_ad_warning_message(sender_label)
+        try:
+            await self.sender.send_entities(client, peer, warn_text, entities)
+        except Exception as exc:
+            log.warning("خطا در ارسال پیام هشدار تبلیغات: %s", exc)
 
     # ------------------------------------------------------- ثبت مالک ربات (Tery ai)
     async def _handle_tery_ai(self, client, event) -> None:

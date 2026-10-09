@@ -502,3 +502,127 @@ def parse_and_format_jalali(val: Union[_dt.datetime, str, None], include_time: b
         return format_jalali_date(dt, include_time=include_time)
     except Exception:
         return str(val)
+
+
+# ---------------------------------------------------------------------------
+# فیلتر کلمات تبلیغاتی و هرزنامه با الگوی ضد دور زدن (Anti-Bypass)
+# ---------------------------------------------------------------------------
+CHAR_EQUIVALENTS: dict[str, str] = {
+    "ک": "[کك]",
+    "ك": "[کك]",
+    "ی": "[یيىئ]",
+    "ي": "[یيىئ]",
+    "ى": "[یيىئ]",
+    "ا": "[اآأإ]",
+    "آ": "[اآأإ]",
+    "أ": "[اآأإ]",
+    "إ": "[اآأإ]",
+    "ه": "[هة]",
+    "ة": "[هة]",
+    "و": "[وؤ]",
+    "ؤ": "[وؤ]",
+}
+
+FILTER_SEPARATORS: str = r"[\s\u200c\u200d\u200e\u200f\u0640\.\/\#\,\-\_\٫\*\~\!\@\|\:\;\^\\\(\)\[\]\{\}\+\=\?\>\<]*"
+
+
+def build_filter_pattern(word: str) -> re.Pattern:
+    r"""ساخت الگوی رگولار ضد دور زدن برای شناسایی کلمات فیلتر/تبلیغات.
+
+    مقاوم در برابر:
+    - کشیدگی حروف (تطویل/ـ)
+    - علائم و نقطه‌گذاری (. / # ٫ - _ * ~ ! @ | : ; \ و غیره)
+    - فاصله‌ها و کاراکترهای با عرض صفر (نیم‌فاصله \u200c و غیره)
+    - تکرار مکرر حروف (ککککاااانال)
+    - حروف مشابه عربی/فارسی (ک/ك، ی/ي، آ/ا، ه/ة)
+    """
+    clean_word = re.sub(
+        r"[\s\u200c\u200d\u200e\u200f\u0640\.\/\#\,\-\_\٫\*\~\!\@\|\:\;\^\\\(\)\[\]\{\}\+\=\?\>\<]",
+        "",
+        word,
+    )
+    if not clean_word:
+        return re.compile(re.escape(word), re.IGNORECASE)
+
+    parts: list[str] = []
+    for ch in clean_word:
+        equiv = CHAR_EQUIVALENTS.get(ch, re.escape(ch))
+        parts.append(rf"(?:{equiv}[\u0640]*)+")
+
+    pattern_str = FILTER_SEPARATORS.join(parts)
+    full_pattern = rf"(?<![\u0600-\u06FF\w]){pattern_str}(?![\u0600-\u06FF\w])"
+    return re.compile(full_pattern, re.IGNORECASE)
+
+
+def contains_filtered_word(text: str, filtered_words: list[str]) -> Optional[str]:
+    """بررسی اینکه آیا متن شامل کلمه‌ای از لیست فیلتر هست یا خیر.
+
+    در صورت یافتن، اولین کلمه مطابقت یافته را برمی‌گرداند؛ در غیر این صورت None.
+    """
+    if not text or not filtered_words:
+        return None
+    for word in filtered_words:
+        w = word.strip()
+        if not w:
+            continue
+        pat = build_filter_pattern(w)
+        if pat.search(text):
+            return w
+    return None
+
+
+def build_ad_warning_message(user_label: str) -> tuple[str, list[object]]:
+    """ساخت پیام هشدار ارسال تبلیغات طبق مشخصات کاربر:
+
+    خط ۱: «⚠️ کاربر  : « {user} »» در قالب Bold و نقل‌قول شیشه‌ای (Blockquote).
+    خط ۲: «در حال ارسال کلمات تبلیغاتی و هرزنامه هست ؛  رفتار نامناسب و ضد قوانین گروه میتوانید اخطار یا هشدار بدهید» در قالب Bold.
+    """
+    MessageEntityBlockquote, MessageEntityBold = _entities()
+
+    line1 = f"⚠️ کاربر  : « {user_label} »"
+    line2 = "در حال ارسال کلمات تبلیغاتی و هرزنامه هست ؛  رفتار نامناسب و ضد قوانین گروه میتوانید اخطار یا هشدار بدهید"
+    full_text = f"{line1}\n\n{line2}"
+
+    l1_len = utf16_len(line1)
+    l2_char_idx = len(line1) + 2
+    l2_off = utf16_offset(full_text, l2_char_idx)
+    l2_len = utf16_len(line2)
+
+    entities = [
+        MessageEntityBlockquote(offset=0, length=l1_len),
+        MessageEntityBold(offset=0, length=l1_len),
+        MessageEntityBold(offset=l2_off, length=l2_len),
+    ]
+    return full_text, entities
+
+
+def build_filter_list_message(words: list[str]) -> tuple[str, list[object]]:
+    """ساخت پیام لیست کلمات فیلتر شده با قالب‌بندی اسپویلر (MessageEntitySpoiler)."""
+    from splusthon.tl.types import MessageEntitySpoiler
+
+    if not words:
+        return "📋 لیست کلمات فیلتر شده این گروه خالی است.", []
+
+    header = "📋 لیست کلمات فیلتر شده این گروه:\n\n"
+    lines = [header]
+    spoiler_spans: list[tuple[int, int]] = []
+    current_char_len = len(header)
+    for idx, word in enumerate(words, 1):
+        prefix = f"{idx}. "
+        line = f"{prefix}{word}\n"
+        word_start = current_char_len + len(prefix)
+        word_char_len = len(word)
+        spoiler_spans.append((word_start, word_char_len))
+        current_char_len += len(line)
+        lines.append(line)
+
+    full_text = "".join(lines).rstrip("\n")
+    entities = []
+    for start_char, char_len in spoiler_spans:
+        off = utf16_offset(full_text, start_char)
+        sub = full_text[start_char : start_char + char_len]
+        l = utf16_len(sub)
+        entities.append(MessageEntitySpoiler(offset=off, length=l))
+
+    return full_text, entities
+

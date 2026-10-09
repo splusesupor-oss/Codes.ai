@@ -111,6 +111,14 @@ CREATE TABLE IF NOT EXISTS ai_usage (
     requests INTEGER NOT NULL DEFAULT 0,     -- تعداد درخواست‌های مصرف‌شده
     PRIMARY KEY (chat_id, day)
 );
+
+CREATE TABLE IF NOT EXISTS group_filtered_words (
+    chat_id    INTEGER NOT NULL,
+    word       TEXT NOT NULL,
+    added_by   INTEGER NOT NULL,
+    added_at   TEXT NOT NULL,
+    PRIMARY KEY (chat_id, word)
+);
 """
 
 
@@ -985,3 +993,41 @@ class OwnerStore:
             claimed_message_id=row["claimed_message_id"],
             claimed_at=row["claimed_at"],
         )
+
+    # ------------------------------------------------- فیلتر کلمات تبلیغاتی (Filtered Words)
+    def add_filtered_word(self, chat_id: int, word: str, added_by: int) -> bool:
+        chat_id = int(chat_id)
+        w = word.strip()
+        if not w:
+            return False
+        now_str = _now()
+        with self._lock:
+            cur = self._conn.execute(
+                """INSERT OR IGNORE INTO group_filtered_words (chat_id, word, added_by, added_at)
+                   VALUES (?, ?, ?, ?)""",
+                (chat_id, w, int(added_by), now_str),
+            )
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    def remove_filtered_word(self, chat_id: int, word: str) -> bool:
+        chat_id = int(chat_id)
+        w = word.strip()
+        if not w:
+            return False
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM group_filtered_words WHERE chat_id = ? AND (word = ? OR lower(word) = lower(?))",
+                (chat_id, w, w),
+            )
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    def get_filtered_words(self, chat_id: int) -> list[str]:
+        chat_id = int(chat_id)
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT word FROM group_filtered_words WHERE chat_id = ? ORDER BY added_at ASC",
+                (chat_id,),
+            ).fetchall()
+        return [r["word"] for r in rows]

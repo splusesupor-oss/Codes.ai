@@ -63,6 +63,7 @@ class QueuedRequest:
     event: Any
     peer: Any
     future: asyncio.Future
+    target_user_info: Optional[dict] = None
 
 
 class GroupQueueManager:
@@ -352,7 +353,11 @@ class GroupAI:
         history.append({"role": role, "content": content[: self.cfg.ai_max_input_chars]})
 
     def _build_messages(
-        self, chat_id: int, user_id: int | str = 0, user_text: str = ""
+        self,
+        chat_id: int,
+        user_id: int | str = 0,
+        user_text: str = "",
+        target_user_info: Optional[dict] = None,
     ) -> list[dict]:
         if isinstance(user_id, str) and not user_text:
             user_text = user_id
@@ -390,6 +395,27 @@ class GroupAI:
                 t_str = f" [{m['time']}]" if m.get("time") else ""
                 rec_lines.append(f"- {m['sender']}{t_str}: {m['text']}")
             group_info_lines.append("\n".join(rec_lines))
+
+        if target_user_info:
+            target_lines = ["اطلاعات کاربری که پیام روی او ریپلای شده است (در صورت سوال درباره این کاربر، از این اطلاعات برای پاسخ دقیق استفاده کن):"]
+            t_name = target_user_info.get("display_name") or "کاربر"
+            t_user = target_user_info.get("username")
+            t_id = target_user_info.get("user_id")
+            t_msg = target_user_info.get("replied_message")
+            t_recent = target_user_info.get("recent_messages")
+
+            target_lines.append(f"• نام نمایشی کاربر: {t_name}")
+            u_handle = f"@{t_user.lstrip('@')}" if t_user else "ندارد"
+            target_lines.append(f"• نام کاربری (یوزرنیم): {u_handle}")
+            if t_id:
+                target_lines.append(f"• شناسه عددی: {t_id}")
+            if t_msg:
+                target_lines.append(f"• متن پیامی که روی آن ریپلای شده: «{t_msg}»")
+            if t_recent:
+                target_lines.append("• آخرین پیام‌های این کاربر در گروه:")
+                for rm in t_recent[-8:]:
+                    target_lines.append(f"  - {rm}")
+            group_info_lines.append("\n".join(target_lines))
 
         system_content = brand.AI_SYSTEM_PROMPT
         if group_info_lines:
@@ -556,21 +582,51 @@ class GroupAI:
 
         reply_is_mine = bool(getattr(reply_msg, "out", False))
         reply_sender_id = int(getattr(reply_msg, "sender_id", 0) or 0)
-        if my_id and reply_sender_id and reply_sender_id != my_id and not reply_is_mine:
-            return
-        if (not reply_is_mine) and (not my_id):
-            if reply_sender_id and reply_sender_id != sender_id and not reply_is_mine:
+        is_reply_to_bot = bool(reply_is_mine or (my_id and reply_sender_id == my_id))
+        target_user_info = None
+
+        if not is_reply_to_bot:
+            # اگر ریپلای روی پیام سایر اعضا باشد، فقط در صورتی پردازش شود که فرستنده
+            # مالک گروه یا کاربر مجاز باشد که می‌خواهد درباره این کاربر از هوش مصنوعی سوال بپرسد
+            allowed = (
+                self.store.ai_is_allowed(chat_id, sender_id)
+                or (self.cfg.ai_owner_always_allowed and self._is_owner(sender_id))
+                or self._is_registered_bot_owner(sender_id)
+            )
+            if not allowed:
                 return
 
-        # بررسی مجوز کاربر
-        allowed = (
-            self.store.ai_is_allowed(chat_id, sender_id)
-            or (self.cfg.ai_owner_always_allowed and self._is_owner(sender_id))
-            or self._is_registered_bot_owner(sender_id)
-        )
-        if not allowed:
-            await self._reply(client, event, brand.AI_DENIED_TEXT)
-            return
+            target_id = reply_sender_id
+            target_sender = getattr(reply_msg, "sender", None)
+            target_username = getattr(target_sender, "username", None) if target_sender else None
+            target_label = self._user_label(reply_msg, target_id, "کاربر")
+            target_text = (getattr(reply_msg, "raw_text", "") or "").strip()
+
+            recent_msgs = self.get_recent_group_messages(chat_id)
+            user_recent = [
+                m["text"]
+                for m in recent_msgs
+                if (m.get("user_id") and m.get("user_id") == target_id)
+                or (m.get("sender") == target_label)
+            ]
+
+            target_user_info = {
+                "user_id": target_id,
+                "username": target_username,
+                "display_name": target_label,
+                "replied_message": target_text,
+                "recent_messages": user_recent[-10:],
+            }
+        else:
+            # بررسی مجوز کاربر هنگام ریپلای مستقیم به پیام ربات
+            allowed = (
+                self.store.ai_is_allowed(chat_id, sender_id)
+                or (self.cfg.ai_owner_always_allowed and self._is_owner(sender_id))
+                or self._is_registered_bot_owner(sender_id)
+            )
+            if not allowed:
+                await self._reply(client, event, brand.AI_DENIED_TEXT)
+                return
 
         # بررسی سهمیه روزانه گروه
         day = self._day()
@@ -602,6 +658,7 @@ class GroupAI:
             event=event,
             peer=peer,
             future=future,
+            target_user_info=target_user_info,
         )
 
         try:
@@ -632,7 +689,9 @@ class GroupAI:
         typing_indicator.start()
         await asyncio.sleep(0)
         try:
-            messages = self._build_messages(req.chat_id, req.sender_id, req.text)
+            messages = self._build_messages(
+                req.chat_id, req.sender_id, req.text, target_user_info=req.target_user_info
+            )
             model_override = req.model_profile.model_id if req.model_profile else None
             max_tokens_override = (
                 req.model_profile.max_output_tokens if req.model_profile else None
