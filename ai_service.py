@@ -321,8 +321,8 @@ class GroupAI:
         sender_id = int(getattr(event, "sender_id", 0) or 0)
         chat_id = int(getattr(event, "chat_id", 0) or 0)
 
-        # بررسی انقضا
-        if self.store.is_expired(self._now()):
+        # بررسی انقضای ربات یا گروه
+        if self.store.is_expired(self._now()) or self.store.is_group_expired(chat_id, self._now(TEHRAN_TZ)):
             await self._reply(client, event, brand.BOT_EXPIRED_TEXT)
             return True
 
@@ -435,7 +435,7 @@ class GroupAI:
         sender_id = int(getattr(event, "sender_id", 0) or 0)
         text = (getattr(event, "raw_text", None) or "").strip()
 
-        if self.store.is_expired(self._now()):
+        if self.store.is_expired(self._now()) or self.store.is_group_expired(chat_id, self._now(TEHRAN_TZ)):
             await self._reply(client, event, brand.BOT_EXPIRED_TEXT)
             return
 

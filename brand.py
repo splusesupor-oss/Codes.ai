@@ -238,12 +238,13 @@ def format_remaining_quota(remaining: int, ceiling: int, used: int) -> str:
 
 
 def format_ai_l_list(user_labels: List[str]) -> str:
-    """قالب نمایش اعضای مجاز هوش مصنوعی (ai L) طبق مشخصات فنی."""
+    """قالب نمایش اعضای مجاز هوش مصنوعی (ai L) طبق مشخصات فنی با رعایت فاصله در براکت."""
     if not user_labels:
         return "هنوز کاربری برای هوش مصنوعی در این گروه مجاز نشده است."
     lines = ["᳆ 𝗔𝗜 𝗟𝗜𝗦𝗧 𝗟", ""]
     for label in user_labels:
-        lines.append(f"❥「{label}」")
+        clean = label.strip()
+        lines.append(f"❥「 {clean} 」")
     return "\n".join(lines)
 
 

@@ -239,7 +239,7 @@ class TestMultiGroupAndModels(unittest.TestCase):
     # ۸) فرمت «ai L» طبق مشخصات فنی (᳆ 𝗔𝗜 𝗟𝗜𝗦𝗧 𝗟 و ❥「...」)
     # -----------------------------------------------------------------------
     def test_ai_l_format(self):
-        """فهرست اعضای مجاز باید با نمادهای جدید قالب‌بندی شود."""
+        """فهرست اعضای مجاز باید با نمادهای جدید و رعایت فاصله داخل براکت قالب‌بندی شود."""
         self.store.ai_allow_user(GROUP_1, USER_A, username="reza_dev")
         self.store.ai_allow_user(GROUP_1, USER_B, display_name="سارا احمدی")
 
@@ -248,8 +248,8 @@ class TestMultiGroupAndModels(unittest.TestCase):
 
         msg = self.client.requests[-1].message
         self.assertIn("᳆ 𝗔𝗜 𝗟𝗜𝗦𝗧 𝗟", msg)
-        self.assertIn("❥「@reza_dev」", msg)
-        self.assertIn("❥「سارا احمدی」", msg)
+        self.assertIn("❥「 @reza_dev 」", msg)
+        self.assertIn("❥「 سارا احمدی 」", msg)
 
     # -----------------------------------------------------------------------
     # ۹) استقلال صف‌های گروه‌ها و عدم مسدودسازی یکدیگر
@@ -390,6 +390,60 @@ class TestMultiGroupAndModels(unittest.TestCase):
         msg2 = self.client.requests[-1].message
         self.assertIn("500", msg2)
         self.assertNotIn("600", msg2)
+
+    # -----------------------------------------------------------------------
+    # ۱۷) محاسبه دقیق انقضا از زمان فعال‌سازی و خاموشی خودکار پس از موعد
+    # -----------------------------------------------------------------------
+    def test_fourteen_day_group_expiration_calculation_and_auto_shutdown(self):
+        """دستور ۱۴ day باید از تاریخ فعال‌سازی محاسبه کرده و پس از سررسید خاموش شود."""
+        # فعال‌سازی اولیه در زمان مشخص
+        act_time = _dt.datetime(2026, 10, 1, 10, 30, 0, tzinfo=_dt.timezone.utc)
+        self.store.activate_group(GROUP_1, OWNER, group_name="گروه پایتون پیشرفته")
+        # تنظیم زمان فعال‌سازی قدیمی‌تر
+        self.store._conn.execute(
+            "UPDATE group_registry SET activated_at = ? WHERE chat_id = ?",
+            (act_time.isoformat(), GROUP_1),
+        )
+        self.store._conn.commit()
+
+        # ارسال دستور ۱۴ day
+        ev = FakeEvent("14 day", user_id=OWNER, chat_id=GROUP_1, is_group=True)
+        run(self.core.on_new_message(self.client, ev))
+
+        resp = self.client.requests[-1].message
+        self.assertIn("گروه پایتون پیشرفته", resp)
+        self.assertIn("14 روز", resp)
+        self.assertIn("𝗔𝗰𝘁𝗶𝘃𝗮𝘁𝗶𝗼𝗻 𝗗𝗮𝘁𝗲⏱", resp)
+        self.assertIn("𝗘𝘅𝗽𝗶𝗿𝗮𝘁𝗶𝗼𝗻 𝗱𝗮𝘁𝗲⏱", resp)
+
+        # تاریخ انقضا باید دقیقاً برابر با act_time + 14 days باشد
+        exp_dt = self.store.get_group_expiration(GROUP_1)
+        expected_exp = act_time + _dt.timedelta(days=14)
+        self.assertIsNotNone(exp_dt)
+        self.assertEqual(exp_dt.day, expected_exp.day)
+
+        # قبل از سررسید (مثلاً روز دهم) گروه منقضی نیست
+        day10 = act_time + _dt.timedelta(days=10)
+        self.assertFalse(self.store.is_group_expired(GROUP_1, now=day10))
+
+        # بعد از سررسید (مثلاً روز پانزدهم) گروه باید خودکار منقضی شود
+        day15 = act_time + _dt.timedelta(days=15)
+        self.assertTrue(self.store.is_group_expired(GROUP_1, now=day15))
+
+    # -----------------------------------------------------------------------
+    # ۱۸) کادربندی شکیل لیست انقضا با نام گروه و تاریخ‌ها
+    # -----------------------------------------------------------------------
+    def test_expiration_list_box_formatting_with_group_name(self):
+        """لیست انقضا باید دارای کادربندی، نام گروه و فرمت دقیق تاریخ‌ها باشد."""
+        ev = FakeEvent("لیست انقضا", user_id=OWNER, chat_id=GROUP_1, is_group=True)
+        run(self.core.on_new_message(self.client, ev))
+
+        msg = self.client.requests[-1].message
+        self.assertIn("☲ 𝖦𝖱︎𝖮︎𝖯︎", msg)
+        self.assertIn("گروه برنامه نویسی ۱", msg)
+        self.assertIn("𝗔𝗰𝘁𝗶𝘃𝗮𝘁𝗶𝗼𝗻 𝗗𝗮𝘁𝗲⏱", msg)
+        self.assertIn("𝗘𝘅𝗽𝗶𝗿𝗮𝘁𝗶𝗼𝗻 𝗱𝗮𝘁𝗲⏱", msg)
+        self.assertIn("⏳ زمان باقیمانده:", msg)
 
 
 if __name__ == "__main__":

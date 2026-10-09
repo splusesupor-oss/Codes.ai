@@ -271,13 +271,15 @@ class BotCore:
             return
 
         sender_id = int(getattr(event, "sender_id", 0) or 0)
+        chat_id = int(getattr(event, "chat_id", 0) or 0)
         norm_text = normalize_text(text)
         current_time = self._now()
 
         # -------------------------------------------------------------
-        # الف) بررسی انقضای سرویس ربات
+        # الف) بررسی انقضای سرویس ربات یا گروه
         # -------------------------------------------------------------
-        if self.store.is_expired(current_time):
+        group_expired = is_group and self.store.is_group_expired(chat_id, current_time)
+        if self.store.is_expired(current_time) or group_expired:
             if self.store.is_owner(sender_id):
                 config_cmd = match_global_config_command(text)
                 if config_cmd and config_cmd[0] == "expire_days":
@@ -469,10 +471,75 @@ class BotCore:
         )
 
     async def _handle_expire_config(self, client, event, days: int) -> None:
-        expires_at = self._now(TEHRAN_TZ) + _dt.timedelta(days=days)
-        self.store.set_expiration(expires_at)
-        msg = f"اعتبار ربات برای {days} روز تنظیم شد."
-        log.info("انقضای ربات به %s روز دیگر (%s) تنظیم شد", days, expires_at.isoformat())
+        chat_id = int(getattr(event, "chat_id", 0) or 0)
+        is_group = bool(getattr(event, "is_group", False) or (chat_id < 0))
+        now_dt = self._now(TEHRAN_TZ) if hasattr(self, "_now") else _dt.datetime.now(TEHRAN_TZ)
+
+        group_name = "گروه"
+        if is_group:
+            rec = self.store.get_group_record(chat_id)
+            if rec and rec.group_name:
+                group_name = rec.group_name
+            else:
+                try:
+                    chat = getattr(event, "chat", None)
+                    if chat and getattr(chat, "title", None):
+                        group_name = chat.title
+                except Exception:
+                    pass
+
+            # محاسبه دقیق تاریخ و ساعت انقضا از زمان فعال‌سازی گروه
+            act_dt = None
+            if rec and rec.activated_at:
+                try:
+                    act_dt = _dt.datetime.fromisoformat(rec.activated_at)
+                    if act_dt.tzinfo is None:
+                        act_dt = act_dt.replace(tzinfo=TEHRAN_TZ)
+                    else:
+                        act_dt = act_dt.astimezone(TEHRAN_TZ)
+                except Exception:
+                    act_dt = None
+
+            if act_dt is None:
+                act_dt = now_dt
+                self.store.activate_group(
+                    chat_id, int(getattr(event, "sender_id", 0) or 0), group_name=group_name
+                )
+
+            expires_at = act_dt + _dt.timedelta(days=days)
+            self.store.set_group_expiration(chat_id, expires_at)
+            self.store.set_expiration(expires_at)
+
+            act_str = act_dt.strftime("%Y-%m-%d %H:%M:%S")
+            exp_str = expires_at.strftime("%Y-%m-%d %H:%M:%S")
+
+            msg = (
+                "⏱ 𝗧𝗜𝗠𝗘 𝗘𝗫𝗣𝗜𝗥𝗔𝗧𝗜𝗢𝗡\n\n"
+                f"☲ 𝖦𝖱︎𝖮︎𝖯︎ 「 {group_name} 」\n"
+                f"• شناسه چت: {chat_id}\n"
+                f"• مدت اعتبار: {days} روز\n\n"
+                "𝗔𝗰𝘁𝗶𝘃𝗮𝘁𝗶𝗼𝗻 𝗗𝗮𝘁𝗲⏱\n"
+                f"꧇◖ {act_str}\n\n"
+                "𝗘𝘅𝗽𝗶𝗿𝗮𝘁𝗶𝗼𝗻 𝗱𝗮𝘁𝗲⏱\n"
+                f"꧇◖ {exp_str}\n\n"
+                f"اعتبار ربات برای {days} روز تنظیم شد.\n"
+                "ربات در تاریخ و ساعت مشخص‌شده به صورت خودکار منقضی و خاموش خواهد شد."
+            )
+            log.info("انقضای گروه %s به %s روز دیگر (%s) تنظیم شد", chat_id, days, exp_str)
+        else:
+            expires_at = now_dt + _dt.timedelta(days=days)
+            self.store.set_expiration(expires_at)
+            exp_str = expires_at.strftime("%Y-%m-%d %H:%M:%S")
+            msg = (
+                "⏱ 𝗧𝗜𝗠𝗘 𝗘𝗫𝗣𝗜𝗥𝗔𝗧𝗜𝗢𝗡\n\n"
+                f"• مدت اعتبار: {days} روز\n\n"
+                "𝗘𝘅𝗽𝗶𝗿𝗮𝘁𝗶𝗼𝗻 𝗱𝗮𝘁𝗲⏱\n"
+                f"꧇◖ {exp_str}\n\n"
+                f"اعتبار ربات برای {days} روز تنظیم شد.\n"
+                "ربات در تاریخ و ساعت مشخص‌شده به صورت خودکار منقضی و خاموش خواهد شد."
+            )
+            log.info("انقضای ربات به %s روز دیگر (%s) تنظیم شد", days, exp_str)
+
         await self.sender.send_styled(
             client, await self._peer_of(event), msg, quote=False,
             reply_to_msg_id=getattr(event, "id", None),
@@ -638,17 +705,17 @@ class BotCore:
         now_dt = self._now(TEHRAN_TZ) if hasattr(self, "_now") else _dt.datetime.now(TEHRAN_TZ)
         day_str = self.ai._day()
 
-        lines = ["📋 𝗟𝗜𝗦𝗧 𝗘𝗫𝗣𝗜𝗥𝗔𝗧𝗜𝗢𝗡 | لیست گروه‌های ثبت‌شده:", ""]
+        lines = ["📋 𝗟𝗜𝗦𝗧 𝗘𝗫𝗣𝗜𝗥𝗔𝗧𝗜𝗢𝗡 | لیست گروه‌های ثبت‌شده", ""]
         for idx, rec in enumerate(records, start=1):
             exp_dt = self.store.get_group_expiration(rec.chat_id)
             if exp_dt:
-                exp_local = exp_dt.astimezone(TEHRAN_TZ)
+                exp_local = exp_dt.astimezone(TEHRAN_TZ) if exp_dt.tzinfo else exp_dt.replace(tzinfo=TEHRAN_TZ)
                 exp_str = exp_local.strftime("%Y-%m-%d %H:%M:%S")
-                if now_dt >= exp_dt:
+                if now_dt >= exp_local:
                     status_text = "❌ منقضی شده"
                     remaining_str = "منقضی شده"
                 else:
-                    diff = exp_dt - now_dt
+                    diff = exp_local - now_dt
                     days = diff.days
                     hours = diff.seconds // 3600
                     status_text = "✅ فعال" if rec.is_active else "⏸ غیرفعال"
@@ -660,20 +727,32 @@ class BotCore:
 
             prof = get_model_profile(rec.model_profile) or MODEL_PROFILES[DEFAULT_MODEL_PROFILE_ID]
             quota_limit = self.store.get_daily_quota(self.cfg.ai_daily_quota, chat_id=rec.chat_id)
+            max_u = self.store.get_max_allowed_users(self.cfg.ai_max_allowed_users, chat_id=rec.chat_id)
             used = self.store.ai_used_quota(rec.chat_id, day_str)
             rem_quota = max(0, quota_limit - used)
+            g_name = rec.group_name or "گروه بدون نام"
 
-            lines.append(f"☲ ردیف {idx}: {rec.group_name or 'بدون نام'}")
+            lines.append("━━━━━━━━━━━━━━━━━━━━")
+            lines.append(f"☲ 𝖦𝖱︎𝖮︎𝖯︎ 「 {g_name} 」")
+            lines.append(f"• ردیف: {idx}")
+            lines.append(f"• نام گروه: {g_name}")
             lines.append(f"• شناسه چت: {rec.chat_id}")
             lines.append(f"• کد رجیستری: {rec.record_id}")
             lines.append(f"• وضعیت: {status_text}")
             lines.append(f"• مدل: مدل {prof.id} — {prof.name}")
-            lines.append(f"• تاریخ فعال‌سازی: {rec.activated_at}")
-            lines.append(f"• تاریخ انقضا: {exp_str}")
-            lines.append(f"• زمان باقیمانده: {remaining_str}")
-            lines.append(f"• سهمیه روزانه: {quota_limit} (مصرف: {used} | باقیمانده: {rem_quota})")
+            lines.append("")
+            lines.append("𝗔𝗰𝘁𝗶𝘃𝗮𝘁𝗶𝗼𝗻 𝗗𝗮𝘁𝗲⏱")
+            lines.append(f"꧇◖ {rec.activated_at}")
+            lines.append("")
+            lines.append("𝗘𝘅𝗽𝗶𝗿𝗮𝘁𝗶𝗼𝗻 𝗱𝗮𝘁𝗲⏱")
+            lines.append(f"꧇◖ {exp_str}")
+            lines.append("")
+            lines.append(f"⏳ زمان باقیمانده: {remaining_str}")
+            lines.append(f"📊 سهمیه پیام: {quota_limit} (مصرف: {used} | باقیمانده: {rem_quota})")
+            lines.append(f"👥 سقف اعضا: {max_u} عضو")
             lines.append("")
 
+        lines.append("━━━━━━━━━━━━━━━━━━━━")
         full_text = "\n".join(lines).strip()
         for chunk in brand.chunk_lines(full_text.split("\n"), self.cfg.max_message_chars):
             await self.sender.send_styled(
