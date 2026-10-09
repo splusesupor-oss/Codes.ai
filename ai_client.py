@@ -338,7 +338,11 @@ class CloudflareAI:
 
         Returns: ``(APIStatus, payload)`` — خطاهای سخت پرتاب می‌شوند.
         """
-        body: dict[str, Any] = {"messages": messages, field_name: int(budget)}
+        body: dict[str, Any] = {
+            "messages": messages,
+            field_name: int(budget),
+            "temperature": 0.35,
+        }
         headers = {
             "Authorization": f"Bearer {self.api_token}",
             "Content-Type": "application/json",

@@ -39,10 +39,10 @@ MODEL_PROFILES: dict[int, ModelProfile] = {
         id=1,
         name="دستیار سریع و عمومی",
         english_name="Fast General Assistant",
-        model_id="@cf/meta/llama-3.1-8b-instruct-fp8-fast",
+        model_id="@cf/meta/llama-3.1-8b-instruct",
         max_output_tokens=1024,
         timeout=25.0,
-        description="پاسخ‌دهی آنی و سبک، مصرف بهینه سهمیه، آشنا با مکالمات و اصطلاحات عامیانه روزمره فارسی.",
+        description="پاسخ‌دهی سریع با دقت زبانی استاندارد و ادبیات روان فارسی بدون توهم و واژگان شکسته.",
     ),
     2: ModelProfile(
         id=2,
