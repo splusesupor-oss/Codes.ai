@@ -483,6 +483,54 @@ class TestMultiGroupAndModels(unittest.TestCase):
         self.assertIn("llama-3.3-70b-instruct-fp8-fast", p2.model_id)
         self.assertGreaterEqual(p2.max_output_tokens, 2048)
 
+    # -----------------------------------------------------------------------
+    # ۲۲) آگاهی هوش مصنوعی از هویت، مالک و ادمین‌های گروه
+    # -----------------------------------------------------------------------
+    def test_group_metadata_injected_for_ai_awareness(self):
+        """هوش مصنوعی باید بداند نام گروه چیست و مالک و ادمین‌های گروه چه کسانی هستند."""
+        self.ai.set_group_metadata(
+            GROUP_1,
+            group_name="انجمن روباه",
+            owner_label="@ali_owner",
+            admin_labels=["@reza_admin", "@sara_admin"],
+            members_count=25,
+        )
+
+        msgs = self.ai._build_messages(GROUP_1, USER_A, "مالک گروه کیست؟")
+        system_content = msgs[0]["content"]
+        self.assertIn("اطلاعات گروه فعلی", system_content)
+        self.assertIn("انجمن روباه", system_content)
+        self.assertIn("@ali_owner", system_content)
+        self.assertIn("@reza_admin", system_content)
+        self.assertIn("@sara_admin", system_content)
+
+    # -----------------------------------------------------------------------
+    # ۲۳) خواندن پیام‌های اخیر گروه و امکان تحلیل برای هوش مصنوعی
+    # -----------------------------------------------------------------------
+    def test_recent_group_messages_recorded_and_injected_for_analysis(self):
+        """پیام‌های ارسالی اعضا باید در بافر اخیر ذخیره شده و به هوش مصنوعی تحویل داده شوند."""
+        # پیام اول از یک عضو
+        ev1 = FakeEvent("بچه‌ها کسی پایتون کار کرده؟", user_id=USER_A, chat_id=GROUP_1, is_group=True)
+        run(self.core.on_new_message(self.client, ev1))
+
+        # پیام دوم از عضو دیگر
+        ev2 = FakeEvent("من کتابخونه تلگرام کار کردم", user_id=USER_B, chat_id=GROUP_1, is_group=True)
+        run(self.core.on_new_message(self.client, ev2))
+
+        # بررسی بافر
+        recent = self.ai.get_recent_group_messages(GROUP_1)
+        self.assertTrue(len(recent) >= 2)
+        texts = [m["text"] for m in recent]
+        self.assertIn("بچه‌ها کسی پایتون کار کرده؟", texts)
+        self.assertIn("من کتابخونه تلگرام کار کردم", texts)
+
+        # ساخت پرامپت برای سوال از هوش مصنوعی
+        msgs = self.ai._build_messages(GROUP_1, USER_A, "بچه‌ها در مورد چی صحبت می‌کردن؟")
+        sys_text = msgs[0]["content"]
+        self.assertIn("آخرین پیام‌های ردوبدل‌شده اعضای گروه", sys_text)
+        self.assertIn("پایتون", sys_text)
+        self.assertIn("تلگرام", sys_text)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -285,6 +285,23 @@ class BotCore:
                     if not rec or not rec.group_name or rec.group_name in ("گروه", "بدون نام", "گروه بدون نام"):
                         self.store.update_group_name(chat_id, t)
 
+            # ثبت پیام جاری در بافر پیام‌های اخیر هوش مصنوعی جهت آگاهی از گفت‌وگوها و تحلیل گروه
+            # فقط پیام‌های عادی گروه بین اعضا (نه دستورات و نه ریپلای‌های اختصاصی به ربات)
+            is_cmd = bool(
+                match_global_config_command(text)
+                or match_ai_command(text, self.cfg)
+                or match_command(text, self.cfg)
+                or is_ai_xcod_command(norm_text)
+                or is_help_command(norm_text)
+                or is_plun_command(norm_text)
+                or is_ai_single_command(norm_text)
+                or is_tery_ai_command(norm_text)
+                or is_expiration_list_command(norm_text)
+            )
+            if text and self.ai and not getattr(event, "is_reply", False) and not is_cmd:
+                sender_label = self.ai._user_label(event, sender_id or 0, "کاربر")
+                self.ai.record_group_message(chat_id, sender_label, text, user_id=sender_id or 0)
+
         # -------------------------------------------------------------
         # الف) بررسی انقضای سرویس ربات یا گروه
         # -------------------------------------------------------------
@@ -427,7 +444,15 @@ class BotCore:
         # ک) گفت‌وگو با هوش مصنوعی (فقط Reply در گروه فعال)
         # -------------------------------------------------------------
         if is_group and getattr(event, "is_reply", False):
-            await self.ai.handle_chat(client, event)
+            if self.ai:
+                meta = self.ai.get_group_metadata(chat_id)
+                if not meta.get("owner_label") or not meta.get("admin_labels"):
+                    try:
+                        g_name, owner, admins = await self._fetch_group_metadata(client, event)
+                        self.ai.set_group_metadata(chat_id, g_name, owner, admins)
+                    except Exception as exc:
+                        log.debug("خطا در بارگذاری اولیه مشخصات گروه برای AI: %s", exc)
+                await self.ai.handle_chat(client, event)
 
     # ------------------------------------------------------- دستورات پیکربندی مالک
     async def _handle_quota_config(self, client, event, quota: int) -> None:
@@ -628,6 +653,8 @@ class BotCore:
         sender_id = int(getattr(event, "sender_id", 0) or 0)
 
         group_name, owner_label, admins = await self._fetch_group_metadata(client, event)
+        if self.ai:
+            self.ai.set_group_metadata(chat_id, group_name, owner_label, admins)
         self.store.activate_group(chat_id, sender_id, group_name=group_name)
         self.store.ai_set_enabled(chat_id, True)
 

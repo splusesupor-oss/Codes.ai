@@ -249,10 +249,70 @@ class GroupAI:
         self._now = now_provider or _dt.datetime.now
         # تاریخچه مجزا به ازای هر کاربر در هر گروه: key = (chat_id, user_id)
         self._history: "OrderedDict[tuple[int, int], deque]" = OrderedDict()
+        # بافر آخرین پیام‌های ردوبدل شده در گروه برای درک زمینه، گفت‌وگوها و تحلیل کلی
+        self._recent_group_messages: dict[int, deque] = {}
+        # مشخصات گروه (نام، مالک، ادمین‌ها و اعضا)
+        self._group_metadata: dict[int, dict] = {}
         # صف مستقل به ازای هر گروه
         self.queue_manager = GroupQueueManager(self._process_single_request)
 
     # ------------------------------------------------------------------ کمکی‌ها
+    def record_group_message(
+        self, chat_id: int, sender_label: str, text: str, user_id: int = 0
+    ) -> None:
+        """ثبت پیام‌های اخیر ردوبدل شده در گروه برای درک زمینه، گفت‌وگوها و تحلیل کلی."""
+        if not text or not chat_id:
+            return
+        chat_id = int(chat_id)
+        if chat_id not in self._recent_group_messages:
+            self._recent_group_messages[chat_id] = deque(maxlen=20)
+
+        clean_text = text.strip()
+        if len(clean_text) > 400:
+            clean_text = clean_text[:400] + "..."
+
+        self._recent_group_messages[chat_id].append({
+            "sender": sender_label,
+            "user_id": int(user_id or 0),
+            "text": clean_text,
+            "time": self._now(TEHRAN_TZ).strftime("%H:%M") if hasattr(self, "_now") else "",
+        })
+
+    def set_group_metadata(
+        self,
+        chat_id: int,
+        group_name: Optional[str] = None,
+        owner_label: Optional[str] = None,
+        admin_labels: Optional[list[str]] = None,
+        members_count: Optional[int] = None,
+    ) -> None:
+        """به‌روزرسانی اطلاعات مالکان، ادمین‌ها و هویت گروه."""
+        chat_id = int(chat_id)
+        current = self._group_metadata.get(chat_id, {}).copy()
+        if group_name:
+            current["group_name"] = group_name
+        if owner_label:
+            current["owner_label"] = owner_label
+        if admin_labels is not None:
+            current["admin_labels"] = admin_labels
+        if members_count is not None:
+            current["members_count"] = members_count
+        self._group_metadata[chat_id] = current
+
+    def get_group_metadata(self, chat_id: int) -> dict:
+        chat_id = int(chat_id)
+        meta = self._group_metadata.get(chat_id, {}).copy()
+        if not meta.get("group_name"):
+            rec = self.store.get_group_record(chat_id)
+            if rec and rec.group_name:
+                meta["group_name"] = rec.group_name
+        return meta
+
+    def get_recent_group_messages(self, chat_id: int) -> list[dict]:
+        chat_id = int(chat_id)
+        msgs = self._recent_group_messages.get(chat_id)
+        return list(msgs) if msgs else []
+
     def _day(self) -> str:
         tz_name = getattr(self.cfg, "ai_quota_timezone", "Asia/Tehran")
         if tz_name == "UTC":
@@ -300,7 +360,43 @@ class GroupAI:
         else:
             uid = int(user_id or 0)
 
-        messages = [{"role": "system", "content": brand.AI_SYSTEM_PROMPT}]
+        # اطلاعات گروه و آخرین پیام‌های تبادل‌شده (در صورت وجود)
+        group_info_lines = []
+        meta = self.get_group_metadata(chat_id)
+        has_real_meta = bool(
+            (meta.get("owner_label") and meta.get("owner_label") != "مالک یافت نشد")
+            or meta.get("admin_labels")
+        )
+        if meta and has_real_meta:
+            g_name = meta.get("group_name") or "گروه"
+            owner = meta.get("owner_label")
+            admins = meta.get("admin_labels")
+            count = meta.get("members_count")
+
+            info = ["اطلاعات گروه فعلی:"]
+            info.append(f"• نام گروه: {g_name}")
+            if owner and owner != "مالک یافت نشد":
+                info.append(f"• مالک (سازنده) اصلی گروه: {owner}")
+            if admins:
+                info.append(f"• مدیران (ادمین‌های) گروه: {', '.join(admins)}")
+            if count:
+                info.append(f"• تعداد اعضای شناخته‌شده: {count}")
+            group_info_lines.append("\n".join(info))
+
+        recent = self.get_recent_group_messages(chat_id)
+        if recent:
+            rec_lines = ["آخرین پیام‌های ردوبدل‌شده اعضای گروه (برای درک زمینه بحث‌ها، تحلیل رفتار اعضا و پاسخ هوشمندانه):"]
+            for m in recent[-10:]:
+                t_str = f" [{m['time']}]" if m.get("time") else ""
+                rec_lines.append(f"- {m['sender']}{t_str}: {m['text']}")
+            group_info_lines.append("\n".join(rec_lines))
+
+        system_content = brand.AI_SYSTEM_PROMPT
+        if group_info_lines:
+            system_content = f"{brand.AI_SYSTEM_PROMPT}\n\n" + "\n\n".join(group_info_lines)
+
+        messages = [{"role": "system", "content": system_content}]
+
         key = (chat_id, uid)
         history = self._history.get(key)
         if history and self.cfg.ai_history_pairs > 0:
