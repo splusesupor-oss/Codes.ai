@@ -414,6 +414,9 @@ def chunk_lines(lines, max_chars: int):
 # ---------------------------------------------------------------------------
 # تبدیل تقویم میلادی به هجری شمسی (جلالی)
 # ---------------------------------------------------------------------------
+TEHRAN_TZ = _dt.timezone(_dt.timedelta(hours=3, minutes=30), name="Asia/Tehran")
+
+
 def gregorian_to_jalali(gy: int, gm: int, gd: int) -> Tuple[int, int, int]:
     """تبدیل تاریخ میلادی به هجری شمسی (الگوریتم تقویم جلالی)."""
     g_d_m = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]
@@ -442,9 +445,11 @@ def gregorian_to_jalali(gy: int, gm: int, gd: int) -> Tuple[int, int, int]:
 
 
 def format_jalali_date(dt: Optional[_dt.datetime], include_time: bool = True) -> str:
-    """تبدیل شیء datetime به فرمت تاریخ هجری شمسی (YYYY/M/D HH:MM:SS)."""
+    """تبدیل شیء datetime به فرمت تاریخ هجری شمسی (YYYY/M/D HH:MM:SS) به وقت تهران."""
     if dt is None:
         return "تنظیم نشده (نامحدود)"
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(TEHRAN_TZ)
     jy, jm, jd = gregorian_to_jalali(dt.year, dt.month, dt.day)
     if include_time:
         time_part = dt.strftime("%H:%M:%S")
@@ -453,7 +458,7 @@ def format_jalali_date(dt: Optional[_dt.datetime], include_time: bool = True) ->
 
 
 def parse_and_format_jalali(val: Union[_dt.datetime, str, None], include_time: bool = True) -> str:
-    """پارس امن ورودی و قالب‌بندی به تاریخ هجری شمسی."""
+    """پارس امن ورودی و قالب‌بندی به تاریخ هجری شمسی به وقت تهران."""
     if not val:
         return "تنظیم نشده (نامحدود)"
     if isinstance(val, _dt.datetime):
