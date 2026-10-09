@@ -19,7 +19,8 @@
 
 from __future__ import annotations
 
-from typing import List, Tuple
+import datetime as _dt
+from typing import List, Optional, Tuple, Union
 
 # ---------------------------------------------------------------------------
 # متن دقیق پیام معرفی
@@ -408,3 +409,63 @@ def chunk_lines(lines, max_chars: int):
     if current:
         chunks.append("\n".join(current))
     return chunks
+
+
+# ---------------------------------------------------------------------------
+# تبدیل تقویم میلادی به هجری شمسی (جلالی)
+# ---------------------------------------------------------------------------
+def gregorian_to_jalali(gy: int, gm: int, gd: int) -> Tuple[int, int, int]:
+    """تبدیل تاریخ میلادی به هجری شمسی (الگوریتم تقویم جلالی)."""
+    g_d_m = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]
+    if gy > 1600:
+        jy = 979
+        gy -= 1600
+    else:
+        jy = 0
+        gy -= 621
+    gy2 = gy if gm > 2 else gy - 1
+    days = (365 * gy) + ((gy2 + 4) // 4) - ((gy2 + 100) // 100) + ((gy2 + 400) // 400) - 80 + gd + g_d_m[gm - 1]
+    jy += 33 * (days // 12053)
+    days %= 12053
+    jy += 4 * (days // 1461)
+    days %= 1461
+    if days > 365:
+        jy += (days - 1) // 365
+        days = (days - 1) % 365
+    if days < 186:
+        jm = 1 + (days // 31)
+        jd = 1 + (days % 31)
+    else:
+        jm = 7 + ((days - 186) // 30)
+        jd = 1 + ((days - 186) % 30)
+    return jy, jm, jd
+
+
+def format_jalali_date(dt: Optional[_dt.datetime], include_time: bool = True) -> str:
+    """تبدیل شیء datetime به فرمت تاریخ هجری شمسی (YYYY/M/D HH:MM:SS)."""
+    if dt is None:
+        return "تنظیم نشده (نامحدود)"
+    jy, jm, jd = gregorian_to_jalali(dt.year, dt.month, dt.day)
+    if include_time:
+        time_part = dt.strftime("%H:%M:%S")
+        return f"{jy}/{jm}/{jd} {time_part}"
+    return f"{jy}/{jm}/{jd}"
+
+
+def parse_and_format_jalali(val: Union[_dt.datetime, str, None], include_time: bool = True) -> str:
+    """پارس امن ورودی و قالب‌بندی به تاریخ هجری شمسی."""
+    if not val:
+        return "تنظیم نشده (نامحدود)"
+    if isinstance(val, _dt.datetime):
+        return format_jalali_date(val, include_time=include_time)
+    val_clean = str(val).strip()
+    try:
+        dt = _dt.datetime.fromisoformat(val_clean)
+        return format_jalali_date(dt, include_time=include_time)
+    except Exception:
+        pass
+    try:
+        dt = _dt.datetime.strptime(val_clean, "%Y-%m-%d %H:%M:%S")
+        return format_jalali_date(dt, include_time=include_time)
+    except Exception:
+        return str(val)

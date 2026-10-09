@@ -275,6 +275,16 @@ class BotCore:
         norm_text = normalize_text(text)
         current_time = self._now()
 
+        # به‌روزرسانی خودکار نام واقعی گروه در رجیستری در صورت نیاز
+        if is_group:
+            chat = getattr(event, "chat", None)
+            if chat and getattr(chat, "title", None) and chat.title.strip():
+                t = chat.title.strip()
+                if t not in ("گروه", "بدون نام", "گروه بدون نام"):
+                    rec = self.store.get_group_record(chat_id)
+                    if not rec or not rec.group_name or rec.group_name in ("گروه", "بدون نام", "گروه بدون نام"):
+                        self.store.update_group_name(chat_id, t)
+
         # -------------------------------------------------------------
         # الف) بررسی انقضای سرویس ربات یا گروه
         # -------------------------------------------------------------
@@ -470,6 +480,46 @@ class BotCore:
             reply_to_msg_id=getattr(event, "id", None),
         )
 
+    async def _resolve_group_name(self, client, event, chat_id: int) -> str:
+        """تشخیص و استخراج نام واقعی گروه از آبجکت‌های پیام یا کلاینت."""
+        rec = self.store.get_group_record(chat_id)
+        saved_name = rec.group_name if rec else None
+        if saved_name and saved_name not in ("گروه", "بدون نام", "گروه بدون نام"):
+            return saved_name
+
+        chat = getattr(event, "chat", None)
+        if chat and getattr(chat, "title", None) and chat.title.strip():
+            title = chat.title.strip()
+            if title not in ("گروه", "بدون نام", "گروه بدون نام"):
+                self.store.update_group_name(chat_id, title)
+                return title
+
+        getter = getattr(event, "get_chat", None)
+        if callable(getter):
+            try:
+                c = await getter()
+                if c and getattr(c, "title", None) and c.title.strip():
+                    title = c.title.strip()
+                    if title not in ("گروه", "بدون نام", "گروه بدون نام"):
+                        self.store.update_group_name(chat_id, title)
+                        return title
+            except Exception:
+                pass
+
+        get_entity = getattr(client, "get_entity", None)
+        if callable(get_entity):
+            try:
+                entity = await get_entity(chat_id)
+                if entity and getattr(entity, "title", None) and entity.title.strip():
+                    title = entity.title.strip()
+                    if title not in ("گروه", "بدون نام", "گروه بدون نام"):
+                        self.store.update_group_name(chat_id, title)
+                        return title
+            except Exception:
+                pass
+
+        return saved_name or "گروه"
+
     async def _handle_expire_config(self, client, event, days: int) -> None:
         chat_id = int(getattr(event, "chat_id", 0) or 0)
         is_group = bool(getattr(event, "is_group", False) or (chat_id < 0))
@@ -477,16 +527,8 @@ class BotCore:
 
         group_name = "گروه"
         if is_group:
+            group_name = await self._resolve_group_name(client, event, chat_id)
             rec = self.store.get_group_record(chat_id)
-            if rec and rec.group_name:
-                group_name = rec.group_name
-            else:
-                try:
-                    chat = getattr(event, "chat", None)
-                    if chat and getattr(chat, "title", None):
-                        group_name = chat.title
-                except Exception:
-                    pass
 
             # محاسبه دقیق تاریخ و ساعت انقضا از زمان فعال‌سازی گروه
             act_dt = None
@@ -510,8 +552,9 @@ class BotCore:
             self.store.set_group_expiration(chat_id, expires_at)
             self.store.set_expiration(expires_at)
 
-            act_str = act_dt.strftime("%Y-%m-%d %H:%M:%S")
-            exp_str = expires_at.strftime("%Y-%m-%d %H:%M:%S")
+            # تاریخ به صورت هجری شمسی (جلالی)
+            act_str = brand.parse_and_format_jalali(act_dt)
+            exp_str = brand.parse_and_format_jalali(expires_at)
 
             msg = (
                 "⏱ 𝗧𝗜𝗠𝗘 𝗘𝗫𝗣𝗜𝗥𝗔𝗧𝗜𝗢𝗡\n\n"
@@ -525,11 +568,11 @@ class BotCore:
                 f"اعتبار ربات برای {days} روز تنظیم شد.\n"
                 "ربات در تاریخ و ساعت مشخص‌شده به صورت خودکار منقضی و خاموش خواهد شد."
             )
-            log.info("انقضای گروه %s به %s روز دیگر (%s) تنظیم شد", chat_id, days, exp_str)
+            log.info("انقضای گروه %s (%s) به %s روز دیگر (%s) تنظیم شد", chat_id, group_name, days, exp_str)
         else:
             expires_at = now_dt + _dt.timedelta(days=days)
             self.store.set_expiration(expires_at)
-            exp_str = expires_at.strftime("%Y-%m-%d %H:%M:%S")
+            exp_str = brand.parse_and_format_jalali(expires_at)
             msg = (
                 "⏱ 𝗧𝗜𝗠𝗘 𝗘𝗫𝗣𝗜𝗥𝗔𝗧𝗜𝗢𝗡\n\n"
                 f"• مدت اعتبار: {days} روز\n\n"
@@ -589,11 +632,11 @@ class BotCore:
         self.store.ai_set_enabled(chat_id, True)
 
         now_dt = self._now(TEHRAN_TZ) if hasattr(self, "_now") else _dt.datetime.now(TEHRAN_TZ)
-        act_date_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
+        act_date_str = brand.parse_and_format_jalali(now_dt)
 
         exp_dt = self.store.get_group_expiration(chat_id)
         if exp_dt:
-            exp_date_str = exp_dt.astimezone(TEHRAN_TZ).strftime("%Y-%m-%d %H:%M:%S")
+            exp_date_str = brand.parse_and_format_jalali(exp_dt)
         else:
             exp_date_str = "تنظیم نشده (نامحدود)"
 
@@ -707,10 +750,20 @@ class BotCore:
 
         lines = ["📋 𝗟𝗜𝗦𝗧 𝗘𝗫𝗣𝗜𝗥𝗔𝗧𝗜𝗢𝗡 | لیست گروه‌های ثبت‌شده", ""]
         for idx, rec in enumerate(records, start=1):
+            g_name = rec.group_name or "گروه بدون نام"
+            if g_name in ("گروه", "بدون نام", "گروه بدون نام") and hasattr(client, "get_entity"):
+                try:
+                    ent = await client.get_entity(rec.chat_id)
+                    if ent and getattr(ent, "title", None) and ent.title.strip():
+                        g_name = ent.title.strip()
+                        self.store.update_group_name(rec.chat_id, g_name)
+                except Exception:
+                    pass
+
             exp_dt = self.store.get_group_expiration(rec.chat_id)
             if exp_dt:
                 exp_local = exp_dt.astimezone(TEHRAN_TZ) if exp_dt.tzinfo else exp_dt.replace(tzinfo=TEHRAN_TZ)
-                exp_str = exp_local.strftime("%Y-%m-%d %H:%M:%S")
+                exp_str = brand.parse_and_format_jalali(exp_local)
                 if now_dt >= exp_local:
                     status_text = "❌ منقضی شده"
                     remaining_str = "منقضی شده"
@@ -730,7 +783,7 @@ class BotCore:
             max_u = self.store.get_max_allowed_users(self.cfg.ai_max_allowed_users, chat_id=rec.chat_id)
             used = self.store.ai_used_quota(rec.chat_id, day_str)
             rem_quota = max(0, quota_limit - used)
-            g_name = rec.group_name or "گروه بدون نام"
+            act_str = brand.parse_and_format_jalali(rec.activated_at)
 
             lines.append("━━━━━━━━━━━━━━━━━━━━")
             lines.append(f"☲ 𝖦𝖱︎𝖮︎𝖯︎ 「 {g_name} 」")
@@ -742,7 +795,7 @@ class BotCore:
             lines.append(f"• مدل: مدل {prof.id} — {prof.name}")
             lines.append("")
             lines.append("𝗔𝗰𝘁𝗶𝘃𝗮𝘁𝗶𝗼𝗻 𝗗𝗮𝘁𝗲⏱")
-            lines.append(f"꧇◖ {rec.activated_at}")
+            lines.append(f"꧇◖ {act_str}")
             lines.append("")
             lines.append("𝗘𝘅𝗽𝗶𝗿𝗮𝘁𝗶𝗼𝗻 𝗱𝗮𝘁𝗲⏱")
             lines.append(f"꧇◖ {exp_str}")
