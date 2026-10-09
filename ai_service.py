@@ -255,6 +255,8 @@ class GroupAI:
         self._recent_group_messages: dict[int, deque] = {}
         # مشخصات گروه (نام، مالک، ادمین‌ها و اعضا)
         self._group_metadata: dict[int, dict] = {}
+        # فهرست اعضا و کاربران شناخته‌شده گروه جهت جستجو و شناسایی
+        self._group_members: dict[int, OrderedDict[int, dict]] = {}
         # صف مستقل به ازای هر گروه
         self.queue_manager = GroupQueueManager(self._process_single_request)
 
@@ -314,6 +316,29 @@ class GroupAI:
         chat_id = int(chat_id)
         msgs = self._recent_group_messages.get(chat_id)
         return list(msgs) if msgs else []
+
+    def record_group_member(
+        self, chat_id: int, user_id: int, name: str, username: Optional[str] = None
+    ) -> None:
+        """ثبت کاربر شناخته‌شده در گروه برای امکان جستجو و یافتن کاربران توسط هوش مصنوعی."""
+        if not chat_id or not user_id:
+            return
+        chat_id = int(chat_id)
+        if chat_id not in self._group_members:
+            self._group_members[chat_id] = OrderedDict()
+        members = self._group_members[chat_id]
+        clean_name = (name or "").strip()
+        clean_user = (username or "").strip().lstrip("@") if username else None
+        members[int(user_id)] = {
+            "name": clean_name or f"کاربر {user_id}",
+            "username": clean_user,
+        }
+        if len(members) > 500:
+            members.popitem(last=False)
+
+    def get_group_members(self, chat_id: int) -> dict[int, dict]:
+        """فهرست اعضا و کاربران شناخته‌شده گروه."""
+        return dict(self._group_members.get(int(chat_id), {}))
 
     def _day(self) -> str:
         tz_name = getattr(self.cfg, "ai_quota_timezone", "Asia/Tehran")
@@ -388,6 +413,15 @@ class GroupAI:
             if count:
                 info.append(f"• تعداد اعضای شناخته‌شده: {count}")
             group_info_lines.append("\n".join(info))
+
+            members = self.get_group_members(chat_id)
+            if members:
+                mem_lines = ["فهرست اعضا و کاربران شناخته‌شده در گروه (در صورت پرسش درباره حضور یا مشخصات یک کاربر در گروه، از این اطلاعات با دقت استفاده کن):"]
+                for m_id, m_info in list(members.items())[:60]:
+                    u_disp = m_info.get("name") or "بدون نام"
+                    u_handle = f"@{m_info['username'].lstrip('@')}" if m_info.get("username") else "ندارد"
+                    mem_lines.append(f"• نام: {u_disp} | نام کاربری: {u_handle} | شناسه: {m_id}")
+                group_info_lines.append("\n".join(mem_lines))
 
         recent = self.get_recent_group_messages(chat_id)
         if recent:
@@ -659,6 +693,22 @@ class GroupAI:
         if self.store.ai_used_quota(chat_id, day) >= limit:
             await self._reply(client, event, brand.AI_QUOTA_TEXT)
             return
+
+        # به‌روزرسانی لیست اعضای گروه از کلاینت در صورت پشتیبانی
+        if callable(getattr(client, "get_participants", None)):
+            try:
+                all_p = await client.get_participants(chat_id)
+                if all_p:
+                    for p in all_p:
+                        p_id = getattr(p, "id", None) or getattr(p, "user_id", None)
+                        if p_id:
+                            p_fn = (getattr(p, "first_name", "") or "").strip()
+                            p_ln = (getattr(p, "last_name", "") or "").strip()
+                            p_dn = f"{p_fn} {p_ln}".strip()
+                            p_un = getattr(p, "username", None)
+                            self.record_group_member(chat_id, int(p_id), p_dn or f"کاربر {p_id}", p_un)
+            except Exception as exc:
+                log.debug("خطا در واکشی شرکت‌کنندگان در handle_chat: %s", exc)
 
         profile = self.get_group_model_profile(chat_id)
 

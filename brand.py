@@ -204,7 +204,8 @@ AI_SYSTEM_PROMPT = (
     "۷) ساخت انواع فونت‌های زیبای انگلیسی: وقتی کاربر متنی انگلیسی به تو می‌دهد و می‌خواهد برایش فونت بسازی، متن را به زیباترین فونت‌ها و استایل‌های یونیکد مختلف تبدیل کن (مانند Bold، Italic، Script/Cursive، Gothic/Fraktur، Double-Struck، Monospace، Circled، Small Caps و Aesthetic) و آن‌ها را شیک و دسته‌بندی‌شده برای کپی آسان قرار بده.\n"
     "۸) ترجمه دقیق و روان: متون انگلیسی و سایر زبان‌ها را به صورت کاملاً روان، دقیق، با رعایت بار معنایی، اصطلاحات محلی و ضرب‌المثل‌ها ترجمه کن.\n"
     "۹) کدنویسی کامل، تمیز و بدون محدودیت کلمات کوتاه: هرگز پاسخ‌ها را به چند کلمه کوتاه یا ناقص محدود نکن. در نوشتن کد، کدهای کامل، بدون باگ، حرفه‌ای، بهینه و آماده اجرا ارائه بده و هرگز بخش‌های مهم کد را حذف یا نصفه‌کاره رها نکن. هر کادر پیام مجاز است تا پاسخ‌های مفصل، کامل و پرجزئیات داشته باشد.\n"
-    "۱۰) نگارش پرامپت‌های فوق‌العاده قوی برای ساخت تصویر: اگر درخواست پرامپت برای ساخت عکس، تصویر یا گرافیک داشتی (برای هوش‌های مصنوعی مثل Midjourney, DALL-E, Stable Diffusion, Flux)، پرامپت‌های بسیار قدرتمند، سینمایی، با جزئیات دقیق بصری، سبک هنری، نورپردازی، نوع لنز، زاویه دوربین، کیفیت 8K و پارامترهای فنی به زبان انگلیسی همراه با توضیح مفهوم به زبان فارسی بنویس."
+    "۱۰) نگارش پرامپت‌های فوق‌العاده قوی برای ساخت تصویر: اگر درخواست پرامپت برای ساخت عکس، تصویر یا گرافیک داشتی (برای هوش‌های مصنوعی مثل Midjourney, DALL-E, Stable Diffusion, Flux)، پرامپت‌های بسیار قدرتمند، سینمایی، با جزئیات دقیق بصری، سبک هنری، نورپردازی، نوع لنز، زاویه دوربین، کیفیت 8K و پارامترهای فنی به زبان انگلیسی همراه با توضیح مفهوم به زبان فارسی بنویس.\n"
+    "۱۱) یافتن و شناسایی کاربران گروه: تو به فهرست اعضا و کاربران شناخته‌شده گروه دسترسی داری. اگر از تو خواسته شد کاربری را با نام، نام کاربری یا مشخصات در گروه پیدا کنی (مثلاً «یه کاربر با اسم گلناز هست تو گروه پیداش کن»)، با بررسی دقیق لیست اعضا به کاربر بگو که آیا چنین کاربری در گروه هست یا خیر و مشخصات او (نام، نام کاربری و شناسه) را ارائه بده."
 )
 
 
@@ -286,7 +287,7 @@ def format_ai_l_list(user_labels: List[str]) -> str:
 # ---------------------------------------------------------------------------
 HELP_TITLE = "🔸 تمام دستورات به صورت انگلیسی هست"
 
-HELP_ITEMS: List[Tuple[str, str]] = [
+HELP_BLOCKS: List[Tuple[str, str]] = [
     ("مجاز کردن یک کاربر بنویسید:", "ai list"),
     ("برای لغو یک کاربر بنویسید:", "ai list x"),
     ("برای خاموش کردن هوش مصنوعی:", "ai of"),
@@ -294,52 +295,57 @@ HELP_ITEMS: List[Tuple[str, str]] = [
     ("برای دیدن لیست مجازهای هوش مصنوعی:", "ai L"),
     ("برای دیدن سهمیه باقی‌مانده:", "ai plun"),
     ("برای صدا زدن ربات:", "ai"),
+    ("برای فیلتر کردن کلمات تبلیغاتی:", "Flter بعد پیام رو بنویسید\nFlter بیو چک"),
+    ("برای دیدن لیست فیلتر ها:", "list flter"),
+    ("برای برداشتن جمله از فیلتر ها:", "x بعد جمله رو بنویسید\nx بیوچک"),
 ]
 
 
 def build_help_message() -> Tuple[str, List[object]]:
-    """ساخت متن و entityهای پیام راهنما مطابق دقیق فرمت مشخصات فنی:
+    """ساخت متن و entityهای پیام راهنما:
 
     * خط تیتر «🔸 تمام دستورات به صورت انگلیسی هست» داخل نقل‌قول شیشه‌ای (Blockquote)
     * هر خط توضیحی فارسی به‌صورت Bold
-    * هر دستور انگلیسی داخل نقل‌قول شیشه‌ای (Blockquote)
+    * هر بلوک دستور انگلیسی داخل نقل‌قول شیشه‌ای (Blockquote) با یکپارچگی خطوط نمونه
     """
     MessageEntityBlockquote, MessageEntityBold = _entities()
-    lines = [HELP_TITLE, ""]
-    for desc, cmd in HELP_ITEMS:
-        lines.append(desc)
-        lines.append(cmd)
-        lines.append("")
-    if lines[-1] == "":
-        lines.pop()
 
-    full_text = NL.join(lines)
+    sections = [HELP_TITLE]
+    for desc, cmd in HELP_BLOCKS:
+        sections.append(f"{desc}\n{cmd}")
+
+    full_text = "\n\n".join(sections)
     entities: List[object] = []
     cursor = 0
 
-    for line in lines:
-        if line == HELP_TITLE:
-            entities.append(
-                MessageEntityBlockquote(
-                    offset=utf16_offset(full_text, cursor),
-                    length=utf16_len(line),
-                )
+    # ۱) تیتر راهنما
+    entities.append(
+        MessageEntityBlockquote(
+            offset=utf16_offset(full_text, cursor),
+            length=utf16_len(HELP_TITLE),
+        )
+    )
+    cursor += len(HELP_TITLE) + 2
+
+    # ۲) هر بخش دستور
+    for desc, cmd in HELP_BLOCKS:
+        desc_start = cursor
+        entities.append(
+            MessageEntityBold(
+                offset=utf16_offset(full_text, desc_start),
+                length=utf16_len(desc),
             )
-        elif any(line == cmd for _, cmd in HELP_ITEMS):
-            entities.append(
-                MessageEntityBlockquote(
-                    offset=utf16_offset(full_text, cursor),
-                    length=utf16_len(line),
-                )
+        )
+
+        cmd_start = desc_start + len(desc) + 1
+        entities.append(
+            MessageEntityBlockquote(
+                offset=utf16_offset(full_text, cmd_start),
+                length=utf16_len(cmd),
             )
-        elif any(line == desc for desc, _ in HELP_ITEMS):
-            entities.append(
-                MessageEntityBold(
-                    offset=utf16_offset(full_text, cursor),
-                    length=utf16_len(line),
-                )
-            )
-        cursor += len(line) + 1
+        )
+
+        cursor = cmd_start + len(cmd) + 2
 
     entities.sort(key=lambda e: e.offset)
     return full_text, entities

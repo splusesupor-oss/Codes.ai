@@ -365,3 +365,55 @@ class TestAdFilterAndRepliedUser(unittest.TestCase):
         self.assertEqual(user_prompt, "این کاربر چرا ساکته")
         # نام نمایشی کاربر در کانتکست سیستم وجود داشته باشد
         self.assertIn("محسن رضایی", system_content)
+
+    def test_16_help_command_new_filter_items_and_blockquotes(self):
+        import brand
+        text, entities = brand.build_help_message()
+
+        # بررسی وجود بخش‌های جدید فیلتر
+        self.assertIn("برای فیلتر کردن کلمات تبلیغاتی:", text)
+        self.assertIn("Flter بعد پیام رو بنویسید\nFlter بیو چک", text)
+        self.assertIn("برای دیدن لیست فیلتر ها:", text)
+        self.assertIn("list flter", text)
+        self.assertIn("برای برداشتن جمله از فیلتر ها:", text)
+        self.assertIn("x بعد جمله رو بنویسید\nx بیوچک", text)
+
+        # استخراج متن داخل تمام انتیتی‌های blockquote
+        blockquotes = [e for e in entities if isinstance(e, MessageEntityBlockquote)]
+        bq_texts = [
+            text.encode("utf-16-le")[e.offset * 2 : (e.offset + e.length) * 2].decode("utf-16-le")
+            for e in blockquotes
+        ]
+
+        # بررسی اینکه Flter و x به صورت کامل با هم در یک نقل‌قول هستند
+        self.assertIn("Flter بعد پیام رو بنویسید\nFlter بیو چک", bq_texts)
+        self.assertIn("x بعد جمله رو بنویسید\nx بیوچک", bq_texts)
+        self.assertIn("list flter", bq_texts)
+
+    def test_17_ai_find_user_in_group(self):
+        # ثبت مشخصات کاربر با نام «گلناز» در اعضای گروه
+        golnaz_id = 778899
+        self.ai.record_group_member(self.group_id, golnaz_id, "گلناز محمدی", username="golnaz_m")
+        self.ai.set_group_metadata(self.group_id, "گروه تست", "مالک", ["ادمین"])
+
+        # کاربر مجاز سوال می‌پرسد که آیا کاربری به نام گلناز در گروه هست
+        ask_ev = FakeEvent(
+            "ai یه کاربر با اسم گلناز هست تو گروه پیداش کن",
+            sender_id=self.owner_id,
+            chat_id=self.group_id,
+            msg_id=140,
+            reply_to=FakeReplyMessage(sender_id=self.client.me_id, msg_id=139, out=True),
+        )
+
+        self.client.clear_requests()
+        run(self.core.on_new_message(self.client, ask_ev))
+
+        self.assertGreater(len(self.ai_client.calls), 0)
+        messages = self.ai_client.calls[-1]
+        system_content = messages[0]["content"]
+
+        # فهرست اعضا و مشخصات کاربر باید در کانتکست موجود باشد
+        self.assertIn("فهرست اعضا و کاربران شناخته‌شده در گروه", system_content)
+        self.assertIn("گلناز محمدی", system_content)
+        self.assertIn("@golnaz_m", system_content)
+        self.assertIn(str(golnaz_id), system_content)

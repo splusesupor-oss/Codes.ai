@@ -313,6 +313,17 @@ class BotCore:
                     if not rec or not rec.group_name or rec.group_name in ("گروه", "بدون نام", "گروه بدون نام"):
                         self.store.update_group_name(chat_id, t)
 
+            # ثبت اطلاعات فرستنده در فهرست اعضای شناخته‌شده گروه
+            if self.ai and sender_id:
+                sender_obj = getattr(event, "sender", None)
+                f_name = (getattr(sender_obj, "first_name", "") or "").strip()
+                l_name = (getattr(sender_obj, "last_name", "") or "").strip()
+                d_name = f"{f_name} {l_name}".strip()
+                if not d_name and hasattr(sender_obj, "title"):
+                    d_name = getattr(sender_obj, "title", "")
+                u_name = getattr(sender_obj, "username", None)
+                self.ai.record_group_member(chat_id, sender_id, d_name or f"کاربر {sender_id}", u_name)
+
             # ثبت پیام جاری در بافر پیام‌های اخیر هوش مصنوعی جهت آگاهی از گفت‌وگوها و تحلیل گروه
             # فقط پیام‌های عادی گروه بین اعضا (نه دستورات، نه تبلیغات و نه ریپلای‌های اختصاصی به ربات)
             filter_cmd = match_filter_command(text)
