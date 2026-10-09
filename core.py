@@ -419,26 +419,50 @@ class BotCore:
 
     # ------------------------------------------------------- دستورات پیکربندی مالک
     async def _handle_quota_config(self, client, event, quota: int) -> None:
-        self.store.set_daily_quota(quota)
-        max_users = self.store.get_max_allowed_users(self.cfg.ai_max_allowed_users)
-        msg = (
-            f"{brand.format_quota_ceiling(quota, max_users)}\n\n"
-            f"سهمیه روزانه هوش مصنوعی هر گروه به {quota} پیام تنظیم شد."
-        )
-        log.info("سهمیه روزانه به %s پیام تغییر یافت", quota)
+        chat_id = int(getattr(event, "chat_id", 0) or 0)
+        is_group = bool(getattr(event, "is_group", False) or (chat_id < 0))
+        if is_group:
+            self.store.set_group_daily_quota(chat_id, quota)
+            max_users = self.store.get_max_allowed_users(self.cfg.ai_max_allowed_users, chat_id=chat_id)
+            msg = (
+                f"{brand.format_quota_ceiling(quota, max_users)}\n\n"
+                f"سهمیه روزانه هوش مصنوعی این گروه به {quota} پیام تنظیم شد."
+            )
+            log.info("سهمیه روزانه گروه %s به %s پیام تغییر یافت", chat_id, quota)
+        else:
+            self.store.set_daily_quota(quota)
+            max_users = self.store.get_max_allowed_users(self.cfg.ai_max_allowed_users)
+            msg = (
+                f"{brand.format_quota_ceiling(quota, max_users)}\n\n"
+                f"سهمیه روزانه هوش مصنوعی به {quota} پیام تنظیم شد."
+            )
+            log.info("سهمیه روزانه سراسری به %s پیام تغییر یافت", quota)
+
         await self.sender.send_styled(
             client, await self._peer_of(event), msg, quote=False,
             reply_to_msg_id=getattr(event, "id", None),
         )
 
     async def _handle_max_users_config(self, client, event, max_users: int) -> None:
-        self.store.set_max_allowed_users(max_users)
-        quota = self.store.get_daily_quota(self.cfg.ai_daily_quota)
-        msg = (
-            f"{brand.format_quota_ceiling(quota, max_users)}\n\n"
-            f"سقف اعضای مجاز هوش مصنوعی هر گروه به {max_users} عضو تنظیم شد."
-        )
-        log.info("سقف اعضای مجاز به %s عضو تغییر یافت", max_users)
+        chat_id = int(getattr(event, "chat_id", 0) or 0)
+        is_group = bool(getattr(event, "is_group", False) or (chat_id < 0))
+        if is_group:
+            self.store.set_group_max_allowed_users(chat_id, max_users)
+            quota = self.store.get_daily_quota(self.cfg.ai_daily_quota, chat_id=chat_id)
+            msg = (
+                f"{brand.format_quota_ceiling(quota, max_users)}\n\n"
+                f"سقف اعضای مجاز هوش مصنوعی این گروه به {max_users} عضو تنظیم شد."
+            )
+            log.info("سقف اعضای مجاز گروه %s به %s عضو تغییر یافت", chat_id, max_users)
+        else:
+            self.store.set_max_allowed_users(max_users)
+            quota = self.store.get_daily_quota(self.cfg.ai_daily_quota)
+            msg = (
+                f"{brand.format_quota_ceiling(quota, max_users)}\n\n"
+                f"سقف اعضای مجاز هوش مصنوعی به {max_users} عضو تنظیم شد."
+            )
+            log.info("سقف اعضای مجاز سراسری به %s عضو تغییر یافت", max_users)
+
         await self.sender.send_styled(
             client, await self._peer_of(event), msg, quote=False,
             reply_to_msg_id=getattr(event, "id", None),
@@ -585,7 +609,7 @@ class BotCore:
     async def _handle_plun(self, client, event) -> None:
         chat_id = int(getattr(event, "chat_id", 0) or 0)
         day = self.ai._day()
-        limit = self.store.get_daily_quota(self.cfg.ai_daily_quota)
+        limit = self.store.get_daily_quota(self.cfg.ai_daily_quota, chat_id=chat_id)
         used = self.store.ai_used_quota(chat_id, day)
         remaining = max(0, limit - used)
 
@@ -612,7 +636,6 @@ class BotCore:
             return
 
         now_dt = self._now(TEHRAN_TZ) if hasattr(self, "_now") else _dt.datetime.now(TEHRAN_TZ)
-        quota_limit = self.store.get_daily_quota(self.cfg.ai_daily_quota)
         day_str = self.ai._day()
 
         lines = ["📋 𝗟𝗜𝗦𝗧 𝗘𝗫𝗣𝗜𝗥𝗔𝗧𝗜𝗢𝗡 | لیست گروه‌های ثبت‌شده:", ""]
@@ -636,6 +659,7 @@ class BotCore:
                 status_text = "✅ فعال" if rec.is_active else "⏸ غیرفعال"
 
             prof = get_model_profile(rec.model_profile) or MODEL_PROFILES[DEFAULT_MODEL_PROFILE_ID]
+            quota_limit = self.store.get_daily_quota(self.cfg.ai_daily_quota, chat_id=rec.chat_id)
             used = self.store.ai_used_quota(rec.chat_id, day_str)
             rem_quota = max(0, quota_limit - used)
 

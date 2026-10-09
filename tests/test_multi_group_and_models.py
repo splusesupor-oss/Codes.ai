@@ -319,6 +319,78 @@ class TestMultiGroupAndModels(unittest.TestCase):
         # در روز دوم باید سهمیه مصرف‌شده ۰ باشد
         self.assertEqual(self.store.ai_used_quota(GROUP_1, day2), 0)
 
+    # -----------------------------------------------------------------------
+    # ۱۴) تفکیک کامل سهمیه روزانه به ازای هر گروه (Per-Group Daily Quota)
+    # -----------------------------------------------------------------------
+    def test_per_group_quota_configuration(self):
+        """تنظیم سهمیه در گروه ۱ نباید سهمیه گروه ۲ را تغییر دهد."""
+        # تنظیم ۶۰۰ پیام برای گروه ۱
+        ev1 = FakeEvent("600 پیام", user_id=OWNER, chat_id=GROUP_1, is_group=True)
+        run(self.core.on_new_message(self.client, ev1))
+
+        resp1 = self.client.requests[-1].message
+        self.assertIn("600", resp1)
+        self.assertIn("این گروه", resp1)
+
+        # سهمیه گروه ۱ باید ۶۰۰ و گروه ۲ همچنان پیش‌فرض باشد
+        self.assertEqual(self.store.get_daily_quota(chat_id=GROUP_1), 600)
+        self.assertEqual(self.store.get_daily_quota(chat_id=GROUP_2), 5000)
+
+        # حالا تنظیم ۵۰۰ پیام برای گروه ۲
+        ev2 = FakeEvent("500 پیام", user_id=OWNER, chat_id=GROUP_2, is_group=True)
+        run(self.core.on_new_message(self.client, ev2))
+
+        # بررسی نهایی سهمیه‌های مستقل هر دو گروه
+        self.assertEqual(self.store.get_daily_quota(chat_id=GROUP_1), 600)
+        self.assertEqual(self.store.get_daily_quota(chat_id=GROUP_2), 5000 if False else 500)
+
+    # -----------------------------------------------------------------------
+    # ۱۵) تفکیک کامل سقف اعضای مجاز به ازای هر گروه (Per-Group Member Limits)
+    # -----------------------------------------------------------------------
+    def test_per_group_max_users_configuration(self):
+        """تنظیم سقف اعضا در گروه ۱ نباید سقف گروه ۲ را تغییر دهد."""
+        ev1 = FakeEvent("7 عضو", user_id=OWNER, chat_id=GROUP_1, is_group=True)
+        run(self.core.on_new_message(self.client, ev1))
+
+        resp1 = self.client.requests[-1].message
+        self.assertIn("7", resp1)
+        self.assertIn("این گروه", resp1)
+
+        self.assertEqual(self.store.get_max_allowed_users(chat_id=GROUP_1), 7)
+        self.assertEqual(self.store.get_max_allowed_users(chat_id=GROUP_2), 3)
+
+        ev2 = FakeEvent("4 عضو", user_id=OWNER, chat_id=GROUP_2, is_group=True)
+        run(self.core.on_new_message(self.client, ev2))
+
+        self.assertEqual(self.store.get_max_allowed_users(chat_id=GROUP_1), 7)
+        self.assertEqual(self.store.get_max_allowed_users(chat_id=GROUP_2), 4)
+
+    # -----------------------------------------------------------------------
+    # ۱۶) دستور ai plun سقف اختصاصی همان گروه را نمایش می‌دهد
+    # -----------------------------------------------------------------------
+    def test_per_group_plun_displays_group_specific_ceilings(self):
+        """دستور ai plun باید سقف و مصرف منحصربه‌فرد همان گروه را نشان دهد."""
+        self.store.set_group_daily_quota(GROUP_1, 600)
+        self.store.set_group_daily_quota(GROUP_2, 500)
+
+        # مصرف ۱ پیام در گروه ۱
+        today = tehran_day()
+        self.store.ai_consume_quota(GROUP_1, today, 600)
+
+        # ارسال ai plun در گروه ۱
+        ev1 = FakeEvent("ai plun", user_id=USER_A, chat_id=GROUP_1, is_group=True)
+        run(self.core.on_new_message(self.client, ev1))
+        msg1 = self.client.requests[-1].message
+        self.assertIn("600", msg1)
+        self.assertIn("599", msg1)
+
+        # ارسال ai plun در گروه ۲
+        ev2 = FakeEvent("ai plun", user_id=USER_A, chat_id=GROUP_2, is_group=True)
+        run(self.core.on_new_message(self.client, ev2))
+        msg2 = self.client.requests[-1].message
+        self.assertIn("500", msg2)
+        self.assertNotIn("600", msg2)
+
 
 if __name__ == "__main__":
     unittest.main()

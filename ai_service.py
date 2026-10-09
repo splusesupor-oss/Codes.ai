@@ -405,7 +405,7 @@ class GroupAI:
         target_username = getattr(getattr(reply_message, "sender", None), "username", None)
 
         if command == "list":
-            limit = self.store.get_max_allowed_users(self.cfg.ai_max_allowed_users)
+            limit = self.store.get_max_allowed_users(self.cfg.ai_max_allowed_users, chat_id=chat_id)
             current_users = self.store.ai_allowed_users(chat_id)
             is_already_allowed = any(u.user_id == target_id for u in current_users)
 
@@ -478,7 +478,7 @@ class GroupAI:
 
         # بررسی سهمیه روزانه گروه
         day = self._day()
-        limit = self.store.get_daily_quota(self.cfg.ai_daily_quota)
+        limit = self.store.get_daily_quota(self.cfg.ai_daily_quota, chat_id=chat_id)
         if self.store.ai_used_quota(chat_id, day) >= limit:
             await self._reply(client, event, brand.AI_QUOTA_TEXT)
             return
@@ -551,7 +551,7 @@ class GroupAI:
 
             # مصرف سهمیه گروه فقط پس از دریافت پاسخ موفق
             day = self._day()
-            limit = self.store.get_daily_quota(self.cfg.ai_daily_quota)
+            limit = self.store.get_daily_quota(self.cfg.ai_daily_quota, chat_id=req.chat_id)
             self.store.ai_consume_quota(req.chat_id, day, limit)
 
             # ثبت تاریخچه گفت‌وگو منحصراً برای همین کاربر در همین گروه

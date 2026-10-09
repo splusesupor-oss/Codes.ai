@@ -505,7 +505,27 @@ class OwnerStore:
             self._conn.commit()
 
     # ------------------------------------------------- سهمیه و سقف اعضا
-    def get_daily_quota(self, default_val: int = 5000) -> int:
+    def get_daily_quota(self, default_val: int = 5000, chat_id: Optional[int] = None) -> int:
+        if chat_id is not None:
+            chat_id = int(chat_id)
+            with self._lock:
+                row = self._conn.execute(
+                    "SELECT daily_quota FROM group_registry WHERE chat_id = ?",
+                    (chat_id,),
+                ).fetchone()
+                if row and row["daily_quota"] is not None:
+                    return int(row["daily_quota"])
+            with self._lock:
+                row = self._conn.execute(
+                    "SELECT value FROM bot_settings WHERE key = 'daily_quota'"
+                ).fetchone()
+            if row and row["value"]:
+                try:
+                    return int(row["value"])
+                except ValueError:
+                    pass
+            return int(default_val)
+
         with self._lock:
             row = self._conn.execute(
                 "SELECT value FROM bot_settings WHERE key = 'daily_quota'"
@@ -515,6 +535,12 @@ class OwnerStore:
                 return int(row["value"])
             except ValueError:
                 pass
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT daily_quota FROM group_registry WHERE daily_quota IS NOT NULL ORDER BY updated_at DESC LIMIT 1"
+            ).fetchone()
+            if row and row["daily_quota"] is not None:
+                return int(row["daily_quota"])
         return int(default_val)
 
     def set_daily_quota(self, quota: int) -> None:
@@ -527,7 +553,41 @@ class OwnerStore:
             )
             self._conn.commit()
 
-    def get_max_allowed_users(self, default_val: int = 3) -> int:
+    def set_group_daily_quota(self, chat_id: int, quota: int) -> None:
+        chat_id = int(chat_id)
+        quota = int(quota)
+        now_str = _now()
+        with self._lock:
+            rec = self.get_group_record(chat_id)
+            if not rec:
+                self.activate_group(chat_id, 0)
+            self._conn.execute(
+                "UPDATE group_registry SET daily_quota = ?, updated_at = ? WHERE chat_id = ?",
+                (quota, now_str, chat_id),
+            )
+            self._conn.commit()
+
+    def get_max_allowed_users(self, default_val: int = 3, chat_id: Optional[int] = None) -> int:
+        if chat_id is not None:
+            chat_id = int(chat_id)
+            with self._lock:
+                row = self._conn.execute(
+                    "SELECT max_users FROM group_registry WHERE chat_id = ?",
+                    (chat_id,),
+                ).fetchone()
+                if row and row["max_users"] is not None:
+                    return int(row["max_users"])
+            with self._lock:
+                row = self._conn.execute(
+                    "SELECT value FROM bot_settings WHERE key = 'max_allowed_users'"
+                ).fetchone()
+            if row and row["value"]:
+                try:
+                    return int(row["value"])
+                except ValueError:
+                    pass
+            return int(default_val)
+
         with self._lock:
             row = self._conn.execute(
                 "SELECT value FROM bot_settings WHERE key = 'max_allowed_users'"
@@ -537,6 +597,12 @@ class OwnerStore:
                 return int(row["value"])
             except ValueError:
                 pass
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT max_users FROM group_registry WHERE max_users IS NOT NULL ORDER BY updated_at DESC LIMIT 1"
+            ).fetchone()
+            if row and row["max_users"] is not None:
+                return int(row["max_users"])
         return int(default_val)
 
     def set_max_allowed_users(self, limit: int) -> None:
@@ -546,6 +612,20 @@ class OwnerStore:
                 "INSERT INTO bot_settings(key, value) VALUES('max_allowed_users', ?) "
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 (str(limit),),
+            )
+            self._conn.commit()
+
+    def set_group_max_allowed_users(self, chat_id: int, limit: int) -> None:
+        chat_id = int(chat_id)
+        limit = int(limit)
+        now_str = _now()
+        with self._lock:
+            rec = self.get_group_record(chat_id)
+            if not rec:
+                self.activate_group(chat_id, 0)
+            self._conn.execute(
+                "UPDATE group_registry SET max_users = ?, updated_at = ? WHERE chat_id = ?",
+                (limit, now_str, chat_id),
             )
             self._conn.commit()
 
