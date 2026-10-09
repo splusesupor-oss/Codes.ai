@@ -187,8 +187,12 @@ def entity_summary(entities: List[object]) -> List[dict]:
 # پیام‌های سیستم هوش مصنوعی و دستورات جدید
 # ---------------------------------------------------------------------------
 AI_SYSTEM_PROMPT = (
-    "تو دستیار هوش مصنوعی انجمن برنامه نویسی روباه (acod) در پیام‌رسان سروش پلاس هستی. "
-    "پاسخ‌ها را کوتاه، دقیق و مفید به زبان فارسی بده. از پاسخ‌های بسیار طولانی پرهیز کن."
+    "تو دستیار هوش مصنوعی هوشمند، مؤدب، آرام و مسلط انجمن برنامه‌نویسی روباه در سروش پلاس هستی. "
+    "به زبان فارسی روان، طبیعی و دوستانه پاسخ بده. "
+    "پاسخ‌هایت باید دقیق، متناسب با سطح پرسش و متمرکز بر اصل درخواست کاربر باشد. "
+    "از تعارفات مکرر، کلیشه‌ها، مقدمه‌چینی‌های زائد و اظهارات رباتیک خودداری کن. "
+    "اگر کاربر کدی خواست، کد تمیز همراه با توضیحات کوتاه و کاربردی ارائه کن. "
+    "در صورت وجود ابهام، شفاف پاسخ بده و در صورت نیاز کوتاه راهنمایی کن."
 )
 
 AI_ENABLED_TEXT = "֍ 𝗢𝗡𝗟𝗜𝗡𝗘 { 𝗮𝗰𝗼𝗱 𝗳𝗼𝘅} 🏕"
@@ -199,6 +203,7 @@ AI_NEED_REPLY_TEXT = "برای مجازکردن یا حذف دسترسی، با�
 AI_USER_FALLBACK_PREFIX = "کاربر"
 AI_DENIED_TEXT = "شما مجاز به صحبت کردن با هوش مصنوعی 𝖢𝖮︎𝖣︎𝖤︎𝖱︎  𝖠︎𝖨︎ نیستید برای صحبت بایدمالک به شما دسترسی بدهد 🦦🎊"
 AI_QUOTA_TEXT = "سهمیه روزانه هوش مصنوعی به پایان رسیده است."
+AI_QUEUE_BUSY_TEXT = "⚠️ در حال حاضر صف درخواست‌های هوش مصنوعی این گروه تکمیل است. لطفاً چند لحظه دیگر دوباره تلاش کنید."
 
 # دستور «ai»
 AI_CALL_RESPONSE = "جانم 👾"
@@ -213,6 +218,33 @@ AI_NEED_REPLY_REG_OWNER_TEXT = "برای ثبت مالک ربات، باید ر�
 # خطاهای فنی
 AI_ERROR_TEXT = "⚠️ خطا در ارتباط با هوش مصنوعی. لطفاً کمی بعد دوباره تلاش کنید."
 AI_CONFIG_ERROR_TEXT = "⚠️ هوش مصنوعی تنظیم نشده است (CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_API_TOKEN)."
+
+
+def format_quota_ceiling(quota: int, members: int) -> str:
+    """قالب پیکربندی سهمیه و اعضای مجاز طبق مشخصات فنی."""
+    return f"𝗤𝗨𝗢𝗧𝗔 𝗖𝗘𝗜𝗟𝗜𝗡𝗚 : 「{quota}」📥\n\n𝗡𝗨𝗠𝗕𝗘𝗥 : 「{members}」"
+
+
+def format_remaining_quota(remaining: int, ceiling: int, used: int) -> str:
+    """قالب نمایش باقیمانده سهمیه (ai plun) طبق مشخصات فنی."""
+    return (
+        f"📊 سهمیه هوش مصنوعی این گروه:\n"
+        f"𝗤𝗨𝗢𝗧𝗔 𝗖𝗘𝗜𝗟𝗜𝗡𝗚 : 「{remaining}」📥\n\n"
+        f"• کل سهمیه روزانه: {ceiling}\n"
+        f"• مصرف شده: {used}\n"
+        f"• باقی‌مانده: {remaining}\n"
+        f"• زمان ریست: 00:00 به وقت تهران"
+    )
+
+
+def format_ai_l_list(user_labels: List[str]) -> str:
+    """قالب نمایش اعضای مجاز هوش مصنوعی (ai L) طبق مشخصات فنی."""
+    if not user_labels:
+        return "هنوز کاربری برای هوش مصنوعی در این گروه مجاز نشده است."
+    lines = ["᳆ 𝗔𝗜 𝗟𝗜𝗦𝗧 𝗟", ""]
+    for label in user_labels:
+        lines.append(f"❥「{label}」")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -286,6 +318,9 @@ def build_announcement_message(
     group_name: str,
     owner_name: str,
     admin_names: List[str],
+    *,
+    activation_date: Optional[str] = None,
+    expiration_date: Optional[str] = None,
 ) -> Tuple[str, List[object]]:
     """ساخت پیام اعلام فعال‌سازی گروه با دستور «ai x cod».
 
@@ -300,11 +335,9 @@ def build_announcement_message(
       ☲ 𝖠︎𝖣︎𝖬𝖨︎𝖭
       ๏ ADMIN_1
       ๏ ADMIN_2
-      ๏ ADMIN_3
 
+      (اختیاری: زمان‌های فعال‌سازی و انقضا)
       برای آشنایی با هوش مصنوعی کلمه راهنما را بفرستید
-
-    خط پایانی هم نقل‌قول شیشه‌ای و هم Bold است.
     """
     MessageEntityBlockquote, MessageEntityBold = _entities()
     instruction = "برای آشنایی با هوش مصنوعی کلمه راهنما را بفرستید"
@@ -324,6 +357,20 @@ def build_announcement_message(
             lines.append(f"๏ {a}")
     else:
         lines.append("๏ مدیری یافت نشد")
+
+    if activation_date:
+        lines.extend([
+            "",
+            "𝗔𝗰𝘁𝗶𝘃𝗮𝘁𝗶𝗼𝗻 𝗗𝗮𝘁𝗲⏱",
+            f"꧇◖ {activation_date}",
+        ])
+    if expiration_date is not None:
+        lines.extend([
+            "",
+            "𝗘𝘅𝗽𝗶𝗿𝗮𝘁𝗶𝗼𝗻 𝗱𝗮𝘁𝗲⏱",
+            f"꧇◖ {expiration_date or 'تنظیم نشده (نامحدود)'}",
+        ])
+
     lines.append("")
     lines.append(instruction)
 

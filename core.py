@@ -25,6 +25,7 @@ import brand
 from ai_service import GroupAI
 from brand import chunk_lines
 from config import Config
+from models import DEFAULT_MODEL_PROFILE_ID, MODEL_PROFILES, get_model_profile
 from sender import BrandSender, SendReport
 from splusthon import types
 from storage import OwnerStore
@@ -128,6 +129,13 @@ def is_plun_command(text: str) -> bool:
     return normalize_text(text) == "ai plun"
 
 
+def is_expiration_list_command(text: str) -> bool:
+    if not text:
+        return False
+    norm = normalize_text(text)
+    return norm in ("لیست انقضا", "لیست انقضاء", "list engheza", "لیست انقضاها")
+
+
 def is_ai_single_command(text: str) -> bool:
     if not text:
         return False
@@ -178,6 +186,10 @@ def match_ai_command(text: str, cfg: Config) -> Optional[str]:
         return "of"
     if norm == "ai l":
         return "l"
+    if norm == "ai model":
+        return "model"
+    if norm.startswith("ai model "):
+        return norm[3:]  # e.g. "model 1", "model 2", "model 3"
     return None
 
 
@@ -335,6 +347,16 @@ class BotCore:
             return
 
         # -------------------------------------------------------------
+        # هـ/۱) دستور «لیست انقضا» — نمایش فهرست انقضای گروه‌ها (فقط مالک سراسری)
+        # -------------------------------------------------------------
+        if is_expiration_list_command(norm_text):
+            if self.store.is_owner(sender_id):
+                await self._handle_expiration_list(client, event)
+            else:
+                log.info("دستور لیست انقضا از غیرمالک سراسری %s رد شد", sender_id)
+            return
+
+        # -------------------------------------------------------------
         # و) دستور «راهنما» — پیام راهنمای فارسی
         # -------------------------------------------------------------
         if is_help_command(norm_text):
@@ -398,7 +420,11 @@ class BotCore:
     # ------------------------------------------------------- دستورات پیکربندی مالک
     async def _handle_quota_config(self, client, event, quota: int) -> None:
         self.store.set_daily_quota(quota)
-        msg = f"سهمیه روزانه هوش مصنوعی هر گروه به {quota} پیام تنظیم شد."
+        max_users = self.store.get_max_allowed_users(self.cfg.ai_max_allowed_users)
+        msg = (
+            f"{brand.format_quota_ceiling(quota, max_users)}\n\n"
+            f"سهمیه روزانه هوش مصنوعی هر گروه به {quota} پیام تنظیم شد."
+        )
         log.info("سهمیه روزانه به %s پیام تغییر یافت", quota)
         await self.sender.send_styled(
             client, await self._peer_of(event), msg, quote=False,
@@ -407,7 +433,11 @@ class BotCore:
 
     async def _handle_max_users_config(self, client, event, max_users: int) -> None:
         self.store.set_max_allowed_users(max_users)
-        msg = f"سقف اعضای مجاز هوش مصنوعی هر گروه به {max_users} عضو تنظیم شد."
+        quota = self.store.get_daily_quota(self.cfg.ai_daily_quota)
+        msg = (
+            f"{brand.format_quota_ceiling(quota, max_users)}\n\n"
+            f"سقف اعضای مجاز هوش مصنوعی هر گروه به {max_users} عضو تنظیم شد."
+        )
         log.info("سقف اعضای مجاز به %s عضو تغییر یافت", max_users)
         await self.sender.send_styled(
             client, await self._peer_of(event), msg, quote=False,
@@ -463,11 +493,26 @@ class BotCore:
         chat_id = int(getattr(event, "chat_id", 0) or 0)
         sender_id = int(getattr(event, "sender_id", 0) or 0)
 
-        self.store.activate_group(chat_id, sender_id)
+        group_name, owner_label, admins = await self._fetch_group_metadata(client, event)
+        self.store.activate_group(chat_id, sender_id, group_name=group_name)
         self.store.ai_set_enabled(chat_id, True)
 
-        group_name, owner_label, admins = await self._fetch_group_metadata(client, event)
-        text, entities = brand.build_announcement_message(group_name, owner_label, admins)
+        now_dt = self._now(TEHRAN_TZ) if hasattr(self, "_now") else _dt.datetime.now(TEHRAN_TZ)
+        act_date_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+        exp_dt = self.store.get_group_expiration(chat_id)
+        if exp_dt:
+            exp_date_str = exp_dt.astimezone(TEHRAN_TZ).strftime("%Y-%m-%d %H:%M:%S")
+        else:
+            exp_date_str = "تنظیم نشده (نامحدود)"
+
+        text, entities = brand.build_announcement_message(
+            group_name,
+            owner_label,
+            admins,
+            activation_date=act_date_str,
+            expiration_date=exp_date_str,
+        )
 
         log.info("گروه %s فعال شد (نام: %s، مالک: %s، مدیران: %s)", chat_id, group_name, owner_label, len(admins))
         report = await self.sender.send_entities(
@@ -544,12 +589,7 @@ class BotCore:
         used = self.store.ai_used_quota(chat_id, day)
         remaining = max(0, limit - used)
 
-        msg = (
-            "📊 سهمیه هوش مصنوعی این گروه:\n"
-            f"• کل سهمیه روزانه: {limit}\n"
-            f"• مصرف شده: {used}\n"
-            f"• باقی‌مانده: {remaining}"
-        )
+        msg = brand.format_remaining_quota(remaining, limit, used)
         await self.sender.send_styled(
             client,
             await self._peer_of(event),
@@ -557,6 +597,68 @@ class BotCore:
             quote=False,
             reply_to_msg_id=getattr(event, "id", None),
         )
+
+    # ------------------------------------------------------- لیست انقضای گروه‌ها
+    async def _handle_expiration_list(self, client, event) -> None:
+        records = self.store.list_group_records()
+        if not records:
+            await self.sender.send_styled(
+                client,
+                await self._peer_of(event),
+                "📋 هیچ گروهی تاکنون در رجیستری ربات ثبت نشده است.",
+                reply_to_msg_id=getattr(event, "id", None),
+                quote=False,
+            )
+            return
+
+        now_dt = self._now(TEHRAN_TZ) if hasattr(self, "_now") else _dt.datetime.now(TEHRAN_TZ)
+        quota_limit = self.store.get_daily_quota(self.cfg.ai_daily_quota)
+        day_str = self.ai._day()
+
+        lines = ["📋 𝗟𝗜𝗦𝗧 𝗘𝗫𝗣𝗜𝗥𝗔𝗧𝗜𝗢𝗡 | لیست گروه‌های ثبت‌شده:", ""]
+        for idx, rec in enumerate(records, start=1):
+            exp_dt = self.store.get_group_expiration(rec.chat_id)
+            if exp_dt:
+                exp_local = exp_dt.astimezone(TEHRAN_TZ)
+                exp_str = exp_local.strftime("%Y-%m-%d %H:%M:%S")
+                if now_dt >= exp_dt:
+                    status_text = "❌ منقضی شده"
+                    remaining_str = "منقضی شده"
+                else:
+                    diff = exp_dt - now_dt
+                    days = diff.days
+                    hours = diff.seconds // 3600
+                    status_text = "✅ فعال" if rec.is_active else "⏸ غیرفعال"
+                    remaining_str = f"{days} روز و {hours} ساعت"
+            else:
+                exp_str = "تنظیم نشده (بدون انقضا)"
+                remaining_str = "نامحدود"
+                status_text = "✅ فعال" if rec.is_active else "⏸ غیرفعال"
+
+            prof = get_model_profile(rec.model_profile) or MODEL_PROFILES[DEFAULT_MODEL_PROFILE_ID]
+            used = self.store.ai_used_quota(rec.chat_id, day_str)
+            rem_quota = max(0, quota_limit - used)
+
+            lines.append(f"☲ ردیف {idx}: {rec.group_name or 'بدون نام'}")
+            lines.append(f"• شناسه چت: {rec.chat_id}")
+            lines.append(f"• کد رجیستری: {rec.record_id}")
+            lines.append(f"• وضعیت: {status_text}")
+            lines.append(f"• مدل: مدل {prof.id} — {prof.name}")
+            lines.append(f"• تاریخ فعال‌سازی: {rec.activated_at}")
+            lines.append(f"• تاریخ انقضا: {exp_str}")
+            lines.append(f"• زمان باقیمانده: {remaining_str}")
+            lines.append(f"• سهمیه روزانه: {quota_limit} (مصرف: {used} | باقیمانده: {rem_quota})")
+            lines.append("")
+
+        full_text = "\n".join(lines).strip()
+        for chunk in brand.chunk_lines(full_text.split("\n"), self.cfg.max_message_chars):
+            await self.sender.send_styled(
+                client,
+                await self._peer_of(event),
+                chunk,
+                reply_to_msg_id=getattr(event, "id", None),
+                quote=False,
+            )
 
     # ------------------------------------------------------- پیام خصوصی (PV)
     async def _handle_private(self, client, event) -> None:
@@ -600,6 +702,10 @@ class BotCore:
                 if cmd_type == "expire_days":
                     await self._handle_expire_config(client, event, val)
                     return
+
+            if is_expiration_list_command(norm_text):
+                await self._handle_expiration_list(client, event)
+                return
 
             if self.store.is_active(current_time):
                 command = match_pv_admin_command(text, self.cfg)

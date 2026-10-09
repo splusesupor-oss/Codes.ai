@@ -304,12 +304,14 @@ class CloudflareAI:
         """آیا Account ID و Token موجود است؟"""
         return not self._is_placeholder(self.account_id) and not self._is_placeholder(self.api_token)
 
-    def url(self) -> str:
-        return f"{API_BASE}/{self.account_id}/ai/run/{self.model}"
+    def url(self, model: Optional[str] = None) -> str:
+        m = model or self.model
+        return f"{API_BASE}/{self.account_id}/ai/run/{m}"
 
-    def url_masked(self) -> str:
+    def url_masked(self, model: Optional[str] = None) -> str:
         """همان endpoint با حساب پوشیده — برای چاپ در لاگ/ابزار تشخیصی."""
-        return f"{API_BASE}/<ACCOUNT_ID>/ai/run/{self.model}"
+        m = model or self.model
+        return f"{API_BASE}/<ACCOUNT_ID>/ai/run/{m}"
 
     async def _get_session(self):
         if self._session is not None:
@@ -328,7 +330,9 @@ class CloudflareAI:
             self._own_session = None
 
     # ------------------------------------------------------------------ requests
-    async def _post(self, messages: list[dict], budget: int, field_name: str):
+    async def _post(
+        self, messages: list[dict], budget: int, field_name: str, model: Optional[str] = None
+    ):
         """یک تماس خام با API.
 
         Returns: ``(APIStatus, payload)`` — خطاهای سخت پرتاب می‌شوند.
@@ -343,7 +347,7 @@ class CloudflareAI:
         started = loop.time()
         session, owns = await self._get_session()
         try:
-            async with session.post(self.url(), json=body, headers=headers) as resp:
+            async with session.post(self.url(model), json=body, headers=headers) as resp:
                 raw = await resp.text()
                 status = resp.status
         except asyncio.TimeoutError as exc:
@@ -409,6 +413,7 @@ class CloudflareAI:
         self,
         messages: list[dict],
         *,
+        model: Optional[str] = None,
         max_tokens: Optional[int] = None,
         retry_on_empty: bool = True,
         max_retries: int = 0,
@@ -433,7 +438,9 @@ class CloudflareAI:
 
         for attempt in range(attempts):
             try:
-                return await self._chat_once(messages, budget, retry_on_empty=retry_on_empty)
+                return await self._chat_once(
+                    messages, budget, model=model, retry_on_empty=retry_on_empty
+                )
             except AIQuotaExceeded:
                 raise                     # سهمیه: قطعی، فوراً بالا برود
             except AIConfigError:
@@ -459,11 +466,15 @@ class CloudflareAI:
         assert last_error is not None
         raise last_error  # pragma: no cover
 
-    async def _chat_once(self, messages, budget, *, retry_on_empty: bool) -> AIResponse:
+    async def _chat_once(
+        self, messages, budget, *, model: Optional[str] = None, retry_on_empty: bool
+    ) -> AIResponse:
         """یک تلاش کامل برای ارسال به API (با هندل تغییر پارامتر و بودجه)."""
         # ۱) تلاش با پارامتر مدرن؛ در صورت رد شدن، نام قدیمی
         try:
-            _info, raw = await self._post(messages, budget, "max_completion_tokens")
+            _info, raw = await self._post(
+                messages, budget, "max_completion_tokens", model=model
+            )
             field_name = "max_completion_tokens"
         except AIError as exc:
             message = str(exc).lower()
@@ -475,7 +486,7 @@ class CloudflareAI:
             if not field_rejected:
                 raise
             log.warning("پارامتر max_completion_tokens پذیرفته نشد؛ تلاش با max_tokens")
-            _info, raw = await self._post(messages, budget, "max_tokens")
+            _info, raw = await self._post(messages, budget, "max_tokens", model=model)
             field_name = "max_tokens"
 
         text = extract_text(raw)

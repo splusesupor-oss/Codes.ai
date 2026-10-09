@@ -15,6 +15,7 @@ from __future__ import annotations
 import datetime as _dt
 import sqlite3
 import threading
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -45,6 +46,22 @@ CREATE TABLE IF NOT EXISTS group_activations (
     chat_id      INTEGER PRIMARY KEY,
     activated_at TEXT NOT NULL,
     activated_by INTEGER NOT NULL
+);
+
+-- رجیستری جامع هویت و وضعیت گروه‌ها
+CREATE TABLE IF NOT EXISTS group_registry (
+    chat_id          INTEGER PRIMARY KEY,
+    record_id        TEXT NOT NULL UNIQUE,
+    group_name       TEXT,
+    is_active        INTEGER NOT NULL DEFAULT 1,
+    activated_at     TEXT NOT NULL,
+    expires_at       TEXT,
+    model_profile    INTEGER NOT NULL DEFAULT 1,
+    daily_quota      INTEGER,
+    max_users        INTEGER,
+    registered_owner INTEGER,
+    created_at       TEXT NOT NULL,
+    updated_at       TEXT NOT NULL
 );
 
 -- تنظیمات سراسری ربات (کلید-مقدار)
@@ -135,6 +152,24 @@ class RegisteredOwnerRecord:
     display_name: Optional[str]
     registered_at: str
     registered_by: int
+
+
+@dataclass(frozen=True)
+class GroupRecord:
+    """شناسنامه و وضعیت جامع یک گروه فعال در سیستم."""
+
+    chat_id: int
+    record_id: str
+    group_name: Optional[str]
+    is_active: bool
+    activated_at: str
+    expires_at: Optional[str]
+    model_profile: int
+    daily_quota: Optional[int]
+    max_users: Optional[int]
+    registered_owner: Optional[int]
+    created_at: str
+    updated_at: str
 
 
 @dataclass(frozen=True)
@@ -236,8 +271,17 @@ class OwnerStore:
             return cur.rowcount > 0
 
     # ------------------------------------------------- فعال‌سازی پر-گروه (ai x cod)
-    def activate_group(self, chat_id: int, activated_by: int) -> bool:
+    def activate_group(
+        self,
+        chat_id: int,
+        activated_by: int,
+        *,
+        group_name: Optional[str] = None,
+        expires_at: Optional[str] = None,
+        model_profile: int = 1,
+    ) -> bool:
         chat_id = int(chat_id)
+        now_str = _now()
         with self._lock:
             self._conn.execute(
                 """INSERT INTO group_activations (chat_id, activated_at, activated_by)
@@ -245,8 +289,34 @@ class OwnerStore:
                    ON CONFLICT(chat_id) DO UPDATE SET
                        activated_at = excluded.activated_at,
                        activated_by = excluded.activated_by""",
-                (chat_id, _now(), int(activated_by)),
+                (chat_id, now_str, int(activated_by)),
             )
+            row = self._conn.execute(
+                "SELECT record_id, group_name, model_profile, expires_at FROM group_registry WHERE chat_id = ?",
+                (chat_id,),
+            ).fetchone()
+            if row:
+                rec_id = row["record_id"]
+                g_name = group_name or row["group_name"]
+                m_prof = row["model_profile"] or model_profile
+                exp = expires_at or row["expires_at"]
+                self._conn.execute(
+                    """UPDATE group_registry SET
+                           group_name = ?, is_active = 1, expires_at = ?,
+                           model_profile = ?, updated_at = ?
+                       WHERE chat_id = ?""",
+                    (g_name, exp, m_prof, now_str, chat_id),
+                )
+            else:
+                rec_id = f"grp-{uuid.uuid4().hex[:8]}"
+                self._conn.execute(
+                    """INSERT INTO group_registry
+                           (chat_id, record_id, group_name, is_active, activated_at,
+                            expires_at, model_profile, daily_quota, max_users, registered_owner,
+                            created_at, updated_at)
+                       VALUES (?, ?, ?, 1, ?, ?, ?, NULL, NULL, NULL, ?, ?)""",
+                    (chat_id, rec_id, group_name, now_str, expires_at, int(model_profile), now_str, now_str),
+                )
             self._conn.commit()
             return True
 
@@ -261,13 +331,178 @@ class OwnerStore:
 
     def deactivate_group(self, chat_id: int) -> bool:
         chat_id = int(chat_id)
+        now_str = _now()
         with self._lock:
             cur = self._conn.execute(
                 "DELETE FROM group_activations WHERE chat_id = ?",
                 (chat_id,),
             )
+            self._conn.execute(
+                "UPDATE group_registry SET is_active = 0, updated_at = ? WHERE chat_id = ?",
+                (now_str, chat_id),
+            )
             self._conn.commit()
             return cur.rowcount > 0
+
+    # ------------------------------------------------- رجیستری هویت گروه‌ها (Group Registry)
+    def get_group_record(self, chat_id: int) -> Optional[GroupRecord]:
+        chat_id = int(chat_id)
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM group_registry WHERE chat_id = ?", (chat_id,)
+            ).fetchone()
+        if not row:
+            # اگر در group_activations باشد اما هنوز در registry ثبت نشده باشد
+            act = self._conn.execute(
+                "SELECT * FROM group_activations WHERE chat_id = ?", (chat_id,)
+            ).fetchone()
+            if not act:
+                return None
+            self.activate_group(chat_id, act["activated_by"])
+            with self._lock:
+                row = self._conn.execute(
+                    "SELECT * FROM group_registry WHERE chat_id = ?", (chat_id,)
+                ).fetchone()
+        if not row:
+            return None
+        return GroupRecord(
+            chat_id=row["chat_id"],
+            record_id=row["record_id"],
+            group_name=row["group_name"],
+            is_active=bool(row["is_active"]),
+            activated_at=row["activated_at"],
+            expires_at=row["expires_at"],
+            model_profile=int(row["model_profile"] or 1),
+            daily_quota=row["daily_quota"],
+            max_users=row["max_users"],
+            registered_owner=row["registered_owner"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    def list_group_records(self) -> list[GroupRecord]:
+        with self._lock:
+            # همگام‌سازی اولیه از group_activations در صورت نیاز
+            acts = self._conn.execute("SELECT * FROM group_activations").fetchall()
+            for act in acts:
+                exists = self._conn.execute(
+                    "SELECT 1 FROM group_registry WHERE chat_id = ?", (act["chat_id"],)
+                ).fetchone()
+                if not exists:
+                    rec_id = f"grp-{uuid.uuid4().hex[:8]}"
+                    self._conn.execute(
+                        """INSERT OR IGNORE INTO group_registry
+                               (chat_id, record_id, group_name, is_active, activated_at,
+                                model_profile, created_at, updated_at)
+                           VALUES (?, ?, 'گروه', 1, ?, 1, ?, ?)""",
+                        (act["chat_id"], rec_id, act["activated_at"], act["activated_at"], act["activated_at"]),
+                    )
+            self._conn.commit()
+            rows = self._conn.execute(
+                "SELECT * FROM group_registry ORDER BY activated_at DESC"
+            ).fetchall()
+        return [
+            GroupRecord(
+                chat_id=r["chat_id"],
+                record_id=r["record_id"],
+                group_name=r["group_name"],
+                is_active=bool(r["is_active"]),
+                activated_at=r["activated_at"],
+                expires_at=r["expires_at"],
+                model_profile=int(r["model_profile"] or 1),
+                daily_quota=r["daily_quota"],
+                max_users=r["max_users"],
+                registered_owner=r["registered_owner"],
+                created_at=r["created_at"],
+                updated_at=r["updated_at"],
+            )
+            for r in rows
+        ]
+
+    def set_group_model(self, chat_id: int, model_profile: int) -> bool:
+        chat_id = int(chat_id)
+        model_profile = int(model_profile)
+        now_str = _now()
+        with self._lock:
+            # اطمینان از وجود گروه در registry
+            rec = self.get_group_record(chat_id)
+            if not rec:
+                self.activate_group(chat_id, 0, model_profile=model_profile)
+            else:
+                self._conn.execute(
+                    "UPDATE group_registry SET model_profile = ?, updated_at = ? WHERE chat_id = ?",
+                    (model_profile, now_str, chat_id),
+                )
+                self._conn.commit()
+        return True
+
+    def has_group_model(self, chat_id: int) -> bool:
+        chat_id = int(chat_id)
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT model_profile FROM group_registry WHERE chat_id = ?", (chat_id,)
+            ).fetchone()
+        return bool(row and row["model_profile"])
+
+    def get_group_model(self, chat_id: int) -> int:
+        chat_id = int(chat_id)
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT model_profile FROM group_registry WHERE chat_id = ?", (chat_id,)
+            ).fetchone()
+        if row and row["model_profile"]:
+            return int(row["model_profile"])
+        return 1
+
+    def set_group_expiration(self, chat_id: int, expires_at: _dt.datetime | str) -> None:
+        chat_id = int(chat_id)
+        iso_val = expires_at if isinstance(expires_at, str) else expires_at.isoformat()
+        now_str = _now()
+        with self._lock:
+            rec = self.get_group_record(chat_id)
+            if not rec:
+                self.activate_group(chat_id, 0, expires_at=iso_val)
+            else:
+                self._conn.execute(
+                    "UPDATE group_registry SET expires_at = ?, updated_at = ? WHERE chat_id = ?",
+                    (iso_val, now_str, chat_id),
+                )
+                self._conn.commit()
+
+    def get_group_expiration(self, chat_id: int) -> Optional[_dt.datetime]:
+        chat_id = int(chat_id)
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT expires_at FROM group_registry WHERE chat_id = ?", (chat_id,)
+            ).fetchone()
+        if not row or not row["expires_at"]:
+            return None
+        try:
+            return _dt.datetime.fromisoformat(row["expires_at"])
+        except Exception:
+            return None
+
+    def is_group_expired(self, chat_id: int, now: Optional[_dt.datetime] = None) -> bool:
+        exp = self.get_group_expiration(chat_id)
+        if exp is None:
+            return False
+        if now is None:
+            now = _dt.datetime.now(exp.tzinfo) if exp.tzinfo else _dt.datetime.now(_dt.timezone.utc)
+        elif exp.tzinfo is not None and now.tzinfo is None:
+            now = now.replace(tzinfo=exp.tzinfo)
+        elif exp.tzinfo is not None and now.tzinfo is not None:
+            now = now.astimezone(exp.tzinfo)
+        return now >= exp
+
+    def update_group_name(self, chat_id: int, group_name: str) -> None:
+        chat_id = int(chat_id)
+        now_str = _now()
+        with self._lock:
+            self._conn.execute(
+                "UPDATE group_registry SET group_name = ?, updated_at = ? WHERE chat_id = ?",
+                (group_name, now_str, chat_id),
+            )
+            self._conn.commit()
 
     # ------------------------------------------------- سهمیه و سقف اعضا
     def get_daily_quota(self, default_val: int = 5000) -> int:

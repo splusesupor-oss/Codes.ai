@@ -218,6 +218,7 @@ class FakeAI:
 
     async def chat(self, messages, *, max_tokens=None, **_kw):
         self.calls.append(messages)
+        self.last_kwargs = dict(_kw, max_tokens=max_tokens)
         if self.error is not None:
             raise self.error
         from ai_client import AIResponse
