@@ -561,3 +561,81 @@ class TestAdFilterAndRepliedUser(unittest.TestCase):
         self.assertIn("user_a", sys_content)
         self.assertIn("من یه پروژه لاراول دارم بیا پی‌وی", sys_content)
 
+    def test_23_clean_model_output_strips_chinese_and_cjk_characters(self):
+        import brand
+        raw_output = "بله، می‌توانم ببینم. کاربر @osine2剛才 پرسید که «ai میتونی ببینی این کاربر الان چه پاسخی داد»"
+        cleaned = brand.clean_model_output(raw_output)
+        self.assertNotIn("剛才", cleaned)
+        self.assertIn("کاربر @osine2 پرسید", cleaned)
+
+    def test_24_suffix_ai_call_on_reply_triggers_ai_with_replied_message_info(self):
+        # کاربر دیگر (یا بات روباه) پیام داده است
+        bot_fox_id = 9988
+        fox_sender = FakeSenderUser(bot_fox_id, username="bot_fox", first_name="روباه")
+        replied_fox_msg = FakeReplyMessage(
+            sender_id=bot_fox_id,
+            text="🦊 جانم عماد",
+            msg_id=710,
+            sender=fox_sender,
+        )
+
+        # کاربر مالک با قرار دادن ai در انتهای پیام ریپلای می‌کند:
+        query_ev = FakeEvent(
+            "میتونی ببینی این کاربر الان چه پاسخی داد ai",
+            sender_id=self.owner_id,
+            chat_id=self.group_id,
+            reply_to=replied_fox_msg,
+            msg_id=711,
+        )
+
+        self.client.clear_requests()
+        run(self.core.on_new_message(self.client, query_ev))
+
+        # هوش مصنوعی باید فراخوانی شده باشد
+        self.assertGreater(len(self.ai_client.calls), 0)
+        call_msgs = self.ai_client.calls[-1]
+        sys_content = call_msgs[0]["content"]
+        user_prompt = call_msgs[-1]["content"]
+
+        # متن پرسش کاربر باید پاکسازی شده باشد (بدون پسوند ai)
+        self.assertEqual(user_prompt, "میتونی ببینی این کاربر الان چه پاسخی داد")
+        # اطلاعات پیام ریپلای‌شده باید دقیقاً در کانتکست وجود داشته باشد
+        self.assertIn("🦊 جانم عماد", sys_content)
+        self.assertIn("@bot_fox", sys_content)
+        self.assertIn("روباه", sys_content)
+
+    def test_25_bot_mention_tag_on_reply_triggers_ai_with_clean_query(self):
+        replied_msg = FakeReplyMessage(
+            sender_id=5544,
+            text="سلام وقت بخیر",
+            msg_id=720,
+        )
+        query_ev = FakeEvent(
+            "@bot_fox اینو میگم چ پیامی داده",
+            sender_id=self.owner_id,
+            chat_id=self.group_id,
+            reply_to=replied_msg,
+            msg_id=721,
+        )
+
+        self.client.clear_requests()
+        run(self.core.on_new_message(self.client, query_ev))
+
+        self.assertGreater(len(self.ai_client.calls), 0)
+        call_msgs = self.ai_client.calls[-1]
+        user_prompt = call_msgs[-1]["content"]
+        sys_content = call_msgs[0]["content"]
+
+        # منشن ربات از ابتدای پرسش پاک شده باشد
+        self.assertEqual(user_prompt, "اینو میگم چ پیامی داده")
+        self.assertIn("سلام وقت بخیر", sys_content)
+
+    def test_26_system_prompt_rules_13_and_14_pure_persian_and_replied_target(self):
+        import brand
+        prompt = brand.AI_SYSTEM_PROMPT
+        self.assertIn("تکلم ۱۰۰٪ به زبان فارسی درست و بدون حروف چینی یا انگلیسی", prompt)
+        self.assertIn("剛才", prompt)
+        self.assertIn("درک عمیق پیام‌های ریپلای‌شده و تشخیص مخاطب", prompt)
+        self.assertIn("این کاربر چی گفت", prompt)
+        self.assertIn("اینو میگم", prompt)
+

@@ -79,6 +79,56 @@ class QueuedRequest:
     peer: Any
     future: asyncio.Future
     target_user_info: Optional[dict] = None
+    asker_info: Optional[dict] = None
+
+
+def extract_ai_call_query(text: str) -> Optional[str]:
+    """بررسی اینکه آیا پیام صراحتاً هوش مصنوعی را صدا می‌زند یا خیر (پیشوند، پسوند، منشن ربات، یا واژه ai)."""
+    raw = (text or "").strip()
+    if not raw:
+        return None
+
+    # ۱) پیشوند: ai, هوش مصنوعی, ربات (مثلاً «ai این کاربر چی گفت»)
+    prefix_pat = r"^(?:ai|هوش\s*مصنوعی|ربات)(?:[\s:،,–\-]+(.*)|$)"
+    m_pref = re.match(prefix_pat, raw, re.IGNORECASE | re.DOTALL)
+    if m_pref:
+        clean = (m_pref.group(1) or "").strip()
+        return clean if clean else raw
+
+    # ۲) پسوند: ... ai / هوش مصنوعی / ربات (مثلاً «میتونی ببینی این کاربر الان چه پاسخی داد ai»)
+    suffix_pat = r"^(.*?)(?:[\s:،,–\-]+)?(?:ai|هوش\s*مصنوعی|ربات)$"
+    m_suff = re.match(suffix_pat, raw, re.IGNORECASE | re.DOTALL)
+    if m_suff:
+        clean = (m_suff.group(1) or "").strip()
+        if clean:
+            return clean
+
+    # ۳) منشن نام کاربری ربات در آغاز پیام: @bot_fox اینو میگم چ پیامی داده
+    mention_pat = r"^@\w+[\s:،,–\-]+(.*)$"
+    m_men = re.match(mention_pat, raw, re.DOTALL)
+    if m_men:
+        clean = (m_men.group(1) or "").strip()
+        if clean:
+            return clean
+
+    # ۴) وجود کلمه مستقل ai یا هوش مصنوعی یا ربات در متن
+    word_pat = r"(?:\b|_)(?:ai|هوش\s*مصنوعی|ربات)(?:\b|_)"
+    if re.search(word_pat, raw, re.IGNORECASE):
+        clean = re.sub(word_pat, "", raw, flags=re.IGNORECASE).strip()
+        clean = re.sub(r"^[\s:،,–\-]+|[\s:،,–\-]+$", "", clean).strip()
+        return clean if clean else raw
+
+    return None
+
+
+def clean_ai_query(text: str) -> str:
+    """پاکسازی تگ‌های ربات یا پیشوند/پسوند ai از پیام کاربر."""
+    clean = (text or "").strip()
+    clean = re.sub(r"^@\w+[\s:،,–\-]*", "", clean).strip()
+    clean = re.sub(r"[\s:،,–\-]*@\w+$", "", clean).strip()
+    clean = re.sub(r"^(?:ai|هوش\s*مصنوعی|ربات)[\s:،,–\-]*", "", clean, flags=re.IGNORECASE).strip()
+    clean = re.sub(r"[\s:،,–\-]+(?:ai|هوش\s*مصنوعی|ربات)$", "", clean, flags=re.IGNORECASE).strip()
+    return clean if clean else (text or "").strip()
 
 
 class GroupQueueManager:
@@ -441,6 +491,7 @@ class GroupAI:
         user_id: int | str = 0,
         user_text: str = "",
         target_user_info: Optional[dict] = None,
+        asker_info: Optional[dict] = None,
     ) -> list[dict]:
         if isinstance(user_id, str) and not user_text:
             user_text = user_id
@@ -501,6 +552,16 @@ class GroupAI:
                     rec_lines.append(f"- {t_str}{sender_part}: «{m['text']}»")
             group_info_lines.append("\n".join(rec_lines))
 
+        if asker_info:
+            a_name = asker_info.get("display_name") or "کاربر"
+            a_user = f"@{asker_info['username'].lstrip('@')}" if asker_info.get("username") else "ندارد"
+            a_id = asker_info.get("user_id") or uid
+            asker_lines = [
+                "مشخصات کاربر سوال‌کننده فعلی (کسی که در حال چت با تو است):",
+                f"• نام نمایشی: {a_name} | نام کاربری: {a_user} | شناسه: {a_id}",
+            ]
+            group_info_lines.append("\n".join(asker_lines))
+
         if target_user_info:
             target_lines = ["اطلاعات کاربری که پیام روی او ریپلای شده است (در صورت سوال درباره این کاربر، از این اطلاعات برای پاسخ دقیق و تحلیل استفاده کن):"]
             t_name = target_user_info.get("display_name") or "کاربر"
@@ -508,7 +569,10 @@ class GroupAI:
             t_id = target_user_info.get("user_id")
             t_msg = target_user_info.get("replied_message")
             t_recent = target_user_info.get("recent_messages")
+            is_bot = target_user_info.get("is_bot")
 
+            role_desc = "ربات" if is_bot else "کاربر"
+            target_lines.append(f"• نوع فرستنده پیام ریپلای‌شده: {role_desc}")
             target_lines.append(f"• نام نمایشی کاربر (Display Name): {t_name}")
             u_handle = f"@{t_user.lstrip('@')}" if t_user else "ندارد"
             target_lines.append(f"• نام کاربری (Username): {u_handle}")
@@ -520,6 +584,13 @@ class GroupAI:
                 target_lines.append("• آخرین پیام‌های این کاربر در گروه:")
                 for rm in t_recent[-8:]:
                     target_lines.append(f"  - {rm}")
+
+            target_lines.append(
+                "• راهنمای حیاتی برای تشخیص مخاطب: کاربر روی پیام بالا ریپلای زده است. "
+                "اگر سوال او عباراتی مانند «این کاربر»، «این پیام»، «چی گفت»، «چه پاسخی داد»، «منظورش چیه»، «اینو میگم» یا سوال درباره پیام ریپلای‌شده باشد، "
+                f"مقصود کاربر دقیقاً همین پیام ریپلای‌شده («{t_msg}») و فرستنده آن ({t_name}) است، نه خود سوال‌کننده! "
+                "تمام پاسخ‌ها باید ۱۰۰٪ به زبان فارسی صحیح، دقیق، بدون حروف یا کلمات چینی/انگلیسی و بدون به‌هم‌ریختگی باشد."
+            )
             group_info_lines.append("\n".join(target_lines))
 
         system_content = brand.AI_SYSTEM_PROMPT
@@ -698,43 +769,25 @@ class GroupAI:
             or (my_id and reply_sender_id == my_id)
             or (reply_sender_id and reply_sender_id == sender_id)
         )
+
+        is_querying_replied = bool(
+            not is_reply_to_bot
+            or re.search(r"(?:این\s*کاربر|این\s*پیام|اینو|اینرو|چی\s*گفت|چه\s*پاسخی|چه\s*پیامی|منظورش|@\w+)", text)
+        )
+
         target_user_info = None
+        asker_info = None
 
-        if not is_reply_to_bot:
-            # اگر ریپلای روی پیام سایر اعضا باشد، فقط در صورتی پردازش شود که:
-            # ۱) فرستنده پیام، مالک گروه یا کاربر مجاز باشد
-            allowed = (
-                self.store.ai_is_allowed(chat_id, sender_id)
-                or (self.cfg.ai_owner_always_allowed and self._is_owner(sender_id))
-                or self._is_registered_bot_owner(sender_id)
-            )
-            if not allowed:
-                return
-
-            # ۲) پیام ارسالی صراحتاً با پیشوند هوش مصنوعی آغاز شده باشد (مثال: «ai تحلیل رفتار کاربر» یا «ai این کاربر چرا ساکته»)
-            ai_call_match = re.match(
-                r"^(?:ai|هوش\s*مصنوعی|ربات)(?:[\s:،,–\-]+(.*)|$)",
-                text.strip(),
-                re.IGNORECASE | re.DOTALL,
-            )
-            if not ai_call_match:
-                # اگر کاربر مجاز بدون صدا زدن هوش مصنوعی در حال گفت‌وگوی عادی با اعضاست، ربات ساکت بماند
-                return
-
-            clean_query = (ai_call_match.group(1) or "").strip()
-            if clean_query:
-                text = clean_query
-
+        if is_querying_replied:
+            # استخراج اطلاعات کامل پیامی که روی آن ریپلای شده است
             target_id = reply_sender_id
             target_sender = getattr(reply_msg, "sender", None)
             target_username = getattr(target_sender, "username", None) if target_sender else None
 
-            # استخراج نام نمایشی دقیق
             first_name = (getattr(target_sender, "first_name", "") or "").strip()
             last_name = (getattr(target_sender, "last_name", "") or "").strip()
-            full_display = f"{first_name} {last_name}".strip()
+            full_display = f"{first_name} {last_name}".strip() or getattr(target_sender, "title", "")
             target_label = full_display or self._user_label(reply_msg, target_id, "کاربر")
-
             target_text = (getattr(reply_msg, "raw_text", "") or "").strip()
 
             recent_msgs = self.get_recent_group_messages(chat_id)
@@ -750,8 +803,40 @@ class GroupAI:
                 "username": target_username,
                 "display_name": target_label,
                 "replied_message": target_text,
+                "is_bot": bool(reply_is_mine or (my_id and reply_sender_id == my_id)),
                 "recent_messages": user_recent[-10:],
             }
+
+            # استخراج مشخصات کاربر سوال‌کننده فعلی
+            asker_sender = getattr(event, "sender", None)
+            asker_username = getattr(asker_sender, "username", None) if asker_sender else None
+            a_first = (getattr(asker_sender, "first_name", "") or "").strip()
+            a_last = (getattr(asker_sender, "last_name", "") or "").strip()
+            asker_label = f"{a_first} {a_last}".strip() or getattr(asker_sender, "title", "") or self._user_label(event, sender_id, "کاربر")
+
+            asker_info = {
+                "user_id": sender_id,
+                "username": asker_username,
+                "display_name": asker_label,
+            }
+
+        if not is_reply_to_bot:
+            # اگر ریپلای روی پیام سایر اعضا باشد، فقط در صورتی پردازش شود که:
+            # ۱) پیام صراحتاً هوش مصنوعی را صدا زده باشد (پیشوند، پسوند، منشن یا واژه ai)
+            cleaned_query = extract_ai_call_query(text)
+            if cleaned_query is None:
+                # کاربر مجاز بدون صدا زدن هوش مصنوعی در حال گفت‌وگوی عادی با اعضاست -> سکوت ربات
+                return
+            text = cleaned_query
+
+            # ۲) فرستنده پیام، مالک گروه یا کاربر مجاز باشد
+            allowed = (
+                self.store.ai_is_allowed(chat_id, sender_id)
+                or (self.cfg.ai_owner_always_allowed and self._is_owner(sender_id))
+                or self._is_registered_bot_owner(sender_id)
+            )
+            if not allowed:
+                return
         else:
             # بررسی مجوز کاربر هنگام ریپلای مستقیم به پیام ربات
             allowed = (
@@ -762,6 +847,7 @@ class GroupAI:
             if not allowed:
                 await self._reply(client, event, brand.AI_DENIED_TEXT)
                 return
+            text = clean_ai_query(text)
 
         # بررسی سهمیه روزانه گروه
         day = self._day()
@@ -810,6 +896,7 @@ class GroupAI:
             peer=peer,
             future=future,
             target_user_info=target_user_info,
+            asker_info=asker_info,
         )
 
         try:
@@ -841,7 +928,11 @@ class GroupAI:
         await asyncio.sleep(0)
         try:
             messages = self._build_messages(
-                req.chat_id, req.sender_id, req.text, target_user_info=req.target_user_info
+                req.chat_id,
+                req.sender_id,
+                req.text,
+                target_user_info=req.target_user_info,
+                asker_info=req.asker_info,
             )
             model_override = req.model_profile.model_id if req.model_profile else None
             max_tokens_override = (
