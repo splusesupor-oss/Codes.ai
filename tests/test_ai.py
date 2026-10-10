@@ -486,7 +486,7 @@ class TestDailyQuotaValue(AITestCase):
         self.assertEqual(self.store.ai_usage(GROUP_A, day), 5000)
 
     def test_5000_quota_is_per_group_and_per_day(self):
-        day_a, day_b = tehran_day(), "2026-10-10"
+        day_a, day_b = "2026-10-09", "2026-10-10"
         for _ in range(5000):
             self.assertTrue(self.store.ai_consume_quota(GROUP_A, day_a, 5000))
         self.assertFalse(self.store.ai_consume_quota(GROUP_A, day_a, 5000))   # روز A تمام است

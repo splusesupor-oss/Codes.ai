@@ -343,9 +343,53 @@ class BotCore:
             filtered_words = self.store.get_filtered_words(chat_id)
             is_ad = bool(filtered_words and brand.contains_filtered_word(text, filtered_words))
 
-            if text and self.ai and not getattr(event, "is_reply", False) and not is_cmd and not is_ad:
-                sender_label = self.ai._user_label(event, sender_id or 0, "کاربر")
-                self.ai.record_group_message(chat_id, sender_label, text, user_id=sender_id or 0)
+            if text and self.ai and not is_cmd and not is_ad:
+                is_reply = bool(getattr(event, "is_reply", False))
+                reply_to_bot = False
+                reply_to_info = None
+
+                if is_reply:
+                    try:
+                        reply_msg = await event.get_reply_message() if hasattr(event, "get_reply_message") else None
+                        if reply_msg:
+                            r_out = bool(getattr(reply_msg, "out", False))
+                            r_sender_id = int(getattr(reply_msg, "sender_id", 0) or 0)
+                            me_id = None
+                            if hasattr(client, "get_me"):
+                                try:
+                                    me = await client.get_me()
+                                    me_id = int(getattr(me, "id", 0) or 0)
+                                except Exception:
+                                    pass
+                            if r_out or (me_id and r_sender_id == me_id):
+                                reply_to_bot = True
+                            else:
+                                r_sender = getattr(reply_msg, "sender", None)
+                                r_first = (getattr(r_sender, "first_name", "") or "").strip()
+                                r_last = (getattr(r_sender, "last_name", "") or "").strip()
+                                r_name = f"{r_first} {r_last}".strip() or "کاربر"
+                                r_uname = getattr(r_sender, "username", None)
+                                r_text = (getattr(reply_msg, "raw_text", "") or "").strip()
+                                reply_to_info = {
+                                    "name": r_name,
+                                    "username": r_uname,
+                                    "text": r_text[:80] if r_text else "",
+                                }
+                    except Exception:
+                        pass
+
+                if not reply_to_bot:
+                    sender_label = self.ai._user_label(event, sender_id or 0, "کاربر")
+                    sender_obj = getattr(event, "sender", None)
+                    u_name = getattr(sender_obj, "username", None)
+                    self.ai.record_group_message(
+                        chat_id,
+                        sender_label,
+                        text,
+                        user_id=sender_id or 0,
+                        username=u_name,
+                        reply_to_info=reply_to_info,
+                    )
 
         # -------------------------------------------------------------
         # الف) بررسی انقضای سرویس ربات یا گروه
@@ -518,7 +562,7 @@ class BotCore:
                 if not is_exempt:
                     matched_word = brand.contains_filtered_word(text, filtered_words)
                     if matched_word:
-                        await self._handle_ad_detected(client, event, chat_id, sender_id)
+                        await self._handle_ad_detected(client, event, chat_id, sender_id, matched_word=matched_word)
                         return
 
         # -------------------------------------------------------------
@@ -746,7 +790,7 @@ class BotCore:
                 reply_to_msg_id=getattr(event, "id", None),
             )
 
-    async def _handle_ad_detected(self, client, event, chat_id: int, sender_id: int) -> None:
+    async def _handle_ad_detected(self, client, event, chat_id: int, sender_id: int, matched_word: Optional[str] = None) -> None:
         msg_id = getattr(event, "id", 0) or 0
         dedup_key = (chat_id, msg_id)
         if dedup_key in self._ad_processed_ids:
@@ -754,6 +798,22 @@ class BotCore:
         self._ad_processed_ids.add(dedup_key)
         if len(self._ad_processed_ids) > 2000:
             self._ad_processed_ids.clear()
+
+        # ثبت واقعه تبلیغات در بافر ۵۰ دقیقه‌ای رویدادهای گروه
+        if self.ai:
+            raw_text = (getattr(event, "raw_text", "") or "").strip()
+            sender_label = self.ai._user_label(event, sender_id or 0, "کاربر")
+            sender_obj = getattr(event, "sender", None)
+            u_name = getattr(sender_obj, "username", None)
+            self.ai.record_group_message(
+                chat_id,
+                sender_label,
+                raw_text,
+                user_id=sender_id or 0,
+                username=u_name,
+                is_ad=True,
+                ad_word=matched_word,
+            )
 
         # ۱) حذف پیام تبلیغاتی
         try:

@@ -417,3 +417,147 @@ class TestAdFilterAndRepliedUser(unittest.TestCase):
         self.assertIn("گلناز محمدی", system_content)
         self.assertIn("@golnaz_m", system_content)
         self.assertIn(str(golnaz_id), system_content)
+
+    def test_18_system_prompt_rule_12_continuity_without_repetition_trap(self):
+        import brand
+        prompt = brand.AI_SYSTEM_PROMPT
+        self.assertIn("۵۰ دقیقه", prompt)
+        self.assertIn("الکل", prompt)
+        self.assertIn("شیشه", prompt)
+        self.assertIn("پیوستگی گفت‌وگو بدون تکرار یا گیر کردن روی سوال قبلی", prompt)
+
+    def test_19_ai_session_timeout_50_minutes_per_user(self):
+        import time
+        from ai_service import AI_SESSION_TIMEOUT_SECONDS
+
+        self.assertEqual(AI_SESSION_TIMEOUT_SECONDS, 50 * 60)
+
+        # ارسال اولین پیام کاربر
+        ev1 = FakeEvent(
+            "ai در مورد الکل توضیح بده",
+            sender_id=self.owner_id,
+            chat_id=self.group_id,
+            msg_id=201,
+            reply_to=FakeReplyMessage(sender_id=self.client.me_id, msg_id=200, out=True),
+        )
+        self.ai_client.custom_response = "الکل یک ماده شیمیایی است..."
+        run(self.core.on_new_message(self.client, ev1))
+
+        # تاریخچه کاربر باید ثبت شده باشد
+        hist = self.ai.get_history(self.group_id, self.owner_id)
+        self.assertEqual(len(hist), 2)  # [user, assistant]
+
+        # گذشت ۱۰ دقیقه (کمتر از ۵۰ دقیقه) -> تاریخچه باقی می‌ماند
+        self.ai._history_last_activity[(self.group_id, self.owner_id)] = time.time() - (10 * 60)
+        hist_10m = self.ai.get_history(self.group_id, self.owner_id)
+        self.assertEqual(len(hist_10m), 2)
+
+        # گذشت ۵۱ دقیقه (بیش از ۵۰ دقیقه) -> تایم‌اوت و انقضای سشن
+        self.ai._history_last_activity[(self.group_id, self.owner_id)] = time.time() - (51 * 60)
+        hist_expired = self.ai.get_history(self.group_id, self.owner_id)
+        self.assertEqual(len(hist_expired), 0)
+
+    def test_20_group_messages_buffer_50_minute_ttl(self):
+        import time
+        from ai_service import AI_SESSION_TIMEOUT_SECONDS
+
+        # ثبت پیامی مربوط به ۵۵ دقیقه قبل
+        old_time = time.time() - (55 * 60)
+        self.ai.record_group_message(
+            self.group_id,
+            "کاربر قدیمی",
+            "پیام ۵۵ دقیقه قبل",
+            timestamp=old_time,
+        )
+
+        # ثبت پیامی مربوط به ۵ دقیقه قبل
+        recent_time = time.time() - (5 * 60)
+        self.ai.record_group_message(
+            self.group_id,
+            "کاربر جدید",
+            "پیام ۵ دقیقه قبل",
+            timestamp=recent_time,
+        )
+
+        recent = self.ai.get_recent_group_messages(self.group_id)
+        texts = [m["text"] for m in recent]
+        self.assertNotIn("پیام ۵۵ دقیقه قبل", texts)
+        self.assertIn("پیام ۵ دقیقه قبل", texts)
+
+    def test_21_ad_detection_records_event_in_50m_context(self):
+        self.store.add_filtered_word(self.group_id, "سایت شرطبندی", self.owner_id)
+
+        spammer_id = 667
+        spammer_sender = FakeSenderUser(spammer_id, username="bet_bot", first_name="ربات تبلیغ")
+        ad_ev = FakeEvent(
+            "به سـ.ا.یـ.ت شـ.ر.طـ.بـ.نـ.د.ی ما بیایید",
+            sender_id=spammer_id,
+            chat_id=self.group_id,
+            msg_id=888,
+            sender=spammer_sender,
+        )
+
+        self.client.clear_requests()
+        run(self.core.on_new_message(self.client, ad_ev))
+
+        # واقعه تبلیغات باید در بافر گروه ذخیره شده باشد
+        recent = self.ai.get_recent_group_messages(self.group_id)
+        ad_msgs = [m for m in recent if m.get("is_ad")]
+        self.assertGreater(len(ad_msgs), 0)
+        self.assertEqual(ad_msgs[-1]["username"], "bet_bot")
+        self.assertEqual(ad_msgs[-1]["ad_word"], "سایت شرطبندی")
+
+        # در پرامپت ارسالی به AI هشدار تبلیغ باید منعکس شده باشد
+        msgs = self.ai._build_messages(self.group_id, self.owner_id, "اوضاع گروه چطوره؟")
+        sys_content = msgs[0]["content"]
+        self.assertIn("[⚠️ ارسال تبلیغات]", sys_content)
+        self.assertIn("bet_bot", sys_content)
+        self.assertIn("سایت شرطبندی", sys_content)
+
+    def test_22_member_to_member_reply_recorded_with_target_info(self):
+        # عضو A پیامی ارسال می‌کند
+        user_a_id = 111
+        sender_a = FakeSenderUser(user_a_id, username="user_a", first_name="علی")
+        ev_a = FakeEvent(
+            "سلام دوستان کسی پروژه لاراولی داره؟",
+            sender_id=user_a_id,
+            chat_id=self.group_id,
+            msg_id=901,
+            sender=sender_a,
+        )
+        run(self.core.on_new_message(self.client, ev_a))
+
+        # عضو B به پیام عضو A ریپلای می‌دهد (بدون ذکر ai، یعنی چت عادی)
+        user_b_id = 222
+        sender_b = FakeSenderUser(user_b_id, username="user_b", first_name="رضا")
+        reply_to_a = FakeReplyMessage(
+            sender_id=user_a_id,
+            text="سلام دوستان کسی پروژه لاراولی داره؟",
+            msg_id=901,
+            sender=sender_a,
+        )
+        ev_b = FakeEvent(
+            "من یه پروژه لاراول دارم بیا پی‌وی",
+            sender_id=user_b_id,
+            chat_id=self.group_id,
+            msg_id=902,
+            sender=sender_b,
+            reply_to=reply_to_a,
+        )
+        run(self.core.on_new_message(self.client, ev_b))
+
+        # بررسی بافر پیام‌های اخیر هوش مصنوعی
+        recent = self.ai.get_recent_group_messages(self.group_id)
+        b_msgs = [m for m in recent if m.get("user_id") == user_b_id]
+        self.assertGreater(len(b_msgs), 0)
+        last_b = b_msgs[-1]
+        self.assertIsNotNone(last_b.get("reply_to"))
+        self.assertEqual(last_b["reply_to"]["username"], "user_a")
+
+        # بررسی پرامپت هوش مصنوعی: باید مشخص باشد رضا خطاب به علی صحبت کرده است
+        msgs = self.ai._build_messages(self.group_id, self.owner_id, "خلاصه چت‌ها چی بود؟")
+        sys_content = msgs[0]["content"]
+        self.assertIn("خطاب به", sys_content)
+        self.assertIn("user_a", sys_content)
+        self.assertIn("من یه پروژه لاراول دارم بیا پی‌وی", sys_content)
+

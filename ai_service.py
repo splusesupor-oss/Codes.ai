@@ -15,10 +15,24 @@ import asyncio
 import datetime as _dt
 import logging
 import re
+import time
 import uuid
 from collections import OrderedDict, deque
 from dataclasses import dataclass
 from typing import Any, Optional
+
+AI_SESSION_TIMEOUT_SECONDS = 50 * 60  # ۵۰ دقیقه مهلت حافظه گفت‌وگو و لاگ پیام‌های گروه
+
+
+def _to_timestamp(dt_val) -> float:
+    if isinstance(dt_val, (int, float)):
+        return float(dt_val)
+    if hasattr(dt_val, "timestamp"):
+        try:
+            return dt_val.timestamp()
+        except Exception:
+            pass
+    return time.time()
 
 import brand
 from ai_client import AIConfigError, AIError, AIQuotaExceeded, CloudflareAI
@@ -251,7 +265,9 @@ class GroupAI:
         self._now = now_provider or _dt.datetime.now
         # تاریخچه مجزا به ازای هر کاربر در هر گروه: key = (chat_id, user_id)
         self._history: "OrderedDict[tuple[int, int], deque]" = OrderedDict()
-        # بافر آخرین پیام‌های ردوبدل شده در گروه برای درک زمینه، گفت‌وگوها و تحلیل کلی
+        # زمان آخرین فعالیت برای تایم‌اوت ۵۰ دقیقه‌ای حافظه: key = (chat_id, user_id) -> timestamp
+        self._history_last_activity: dict[tuple[int, int], float] = {}
+        # بافر رویدادها و پیام‌های ۵۰ دقیقه اخیر در گروه برای درک زمینه، تعاملات و تحلیل کلی
         self._recent_group_messages: dict[int, deque] = {}
         # مشخصات گروه (نام، مالک، ادمین‌ها و اعضا)
         self._group_metadata: dict[int, dict] = {}
@@ -261,25 +277,55 @@ class GroupAI:
         self.queue_manager = GroupQueueManager(self._process_single_request)
 
     # ------------------------------------------------------------------ کمکی‌ها
+    def get_history(self, chat_id: int, user_id: int) -> list[dict]:
+        """دریافت تاریخچه گفت‌وگوی کاربر با رعایت سقف ۵۰ دقیقه."""
+        key = (int(chat_id), int(user_id))
+        now_ts = _to_timestamp(self._now())
+        last_act = self._history_last_activity.get(key)
+        if last_act and (now_ts - last_act) > AI_SESSION_TIMEOUT_SECONDS:
+            self._history.pop(key, None)
+            self._history_last_activity.pop(key, None)
+            return []
+        hist = self._history.get(key)
+        return list(hist) if hist else []
+
     def record_group_message(
-        self, chat_id: int, sender_label: str, text: str, user_id: int = 0
+        self,
+        chat_id: int,
+        sender_label: str,
+        text: str,
+        user_id: int = 0,
+        username: Optional[str] = None,
+        reply_to_info: Optional[dict] = None,
+        is_ad: bool = False,
+        ad_word: Optional[str] = None,
+        timestamp: Optional[float] = None,
     ) -> None:
-        """ثبت پیام‌های اخیر ردوبدل شده در گروه برای درک زمینه، گفت‌وگوها و تحلیل کلی."""
+        """ثبت پیام‌ها و رویدادهای ۵۰ دقیقه اخیر گروه با جزئیات کامل فرستنده، مخاطب، کلمات تبلیغاتی و محتوا."""
         if not text or not chat_id:
             return
         chat_id = int(chat_id)
         if chat_id not in self._recent_group_messages:
-            self._recent_group_messages[chat_id] = deque(maxlen=20)
+            self._recent_group_messages[chat_id] = deque(maxlen=100)
 
         clean_text = text.strip()
         if len(clean_text) > 400:
             clean_text = clean_text[:400] + "..."
 
+        now_val = self._now(TEHRAN_TZ) if hasattr(self, "_now") else _dt.datetime.now(TEHRAN_TZ)
+        now_ts = float(timestamp) if timestamp is not None else _to_timestamp(self._now())
+        time_str = now_val.strftime("%H:%M") if hasattr(now_val, "strftime") else ""
+
         self._recent_group_messages[chat_id].append({
             "sender": sender_label,
+            "username": (username or "").strip().lstrip("@") if username else None,
             "user_id": int(user_id or 0),
             "text": clean_text,
-            "time": self._now(TEHRAN_TZ).strftime("%H:%M") if hasattr(self, "_now") else "",
+            "reply_to": reply_to_info,
+            "is_ad": is_ad,
+            "ad_word": ad_word,
+            "time": time_str,
+            "timestamp": now_ts,
         })
 
     def set_group_metadata(
@@ -313,9 +359,18 @@ class GroupAI:
         return meta
 
     def get_recent_group_messages(self, chat_id: int) -> list[dict]:
+        """بازگردانی رویدادها و پیام‌های ۵۰ دقیقه اخیر گروه."""
         chat_id = int(chat_id)
         msgs = self._recent_group_messages.get(chat_id)
-        return list(msgs) if msgs else []
+        if not msgs:
+            return []
+        now_ts = _to_timestamp(self._now())
+        # نگهداری و بازگردانی پیام‌های ۵۰ دقیقه اخیر (۳۰۰۰ ثانیه)
+        valid = [
+            m for m in msgs
+            if (now_ts - m.get("timestamp", now_ts)) <= AI_SESSION_TIMEOUT_SECONDS
+        ]
+        return valid
 
     def record_group_member(
         self, chat_id: int, user_id: int, name: str, username: Optional[str] = None
@@ -370,6 +425,7 @@ class GroupAI:
         if self.cfg.ai_history_pairs <= 0:
             return
         key = (chat_id, int(user_id))
+        now_ts = _to_timestamp(self._now())
         history = self._history.get(key)
         if history is None:
             history = deque(maxlen=self.cfg.ai_history_pairs * 2)
@@ -377,6 +433,7 @@ class GroupAI:
             if len(self._history) > 1000:
                 self._history.popitem(last=False)
         history.append({"role": role, "content": content[: self.cfg.ai_max_input_chars]})
+        self._history_last_activity[key] = now_ts
 
     def _build_messages(
         self,
@@ -425,10 +482,23 @@ class GroupAI:
 
         recent = self.get_recent_group_messages(chat_id)
         if recent:
-            rec_lines = ["آخرین پیام‌های ردوبدل‌شده اعضای گروه (برای درک زمینه بحث‌ها، تحلیل رفتار اعضا و پاسخ هوشمندانه):"]
-            for m in recent[-10:]:
-                t_str = f" [{m['time']}]" if m.get("time") else ""
-                rec_lines.append(f"- {m['sender']}{t_str}: {m['text']}")
+            rec_lines = ["آخرین پیام‌های ردوبدل‌شده اعضای گروه و رویدادهای ۵۰ دقیقه اخیر (شامل اینکه چه کسی به چه کسی پیام داده، چه گفته شده و چه کلمات تبلیغاتی ارسال شده است):"]
+            for m in recent[-15:]:
+                t_str = f"[{m['time']}] " if m.get("time") else ""
+                u_str = f" (@{m['username']})" if m.get("username") else ""
+                sender_part = f"{m['sender']}{u_str}"
+
+                if m.get("is_ad"):
+                    ad_w = f" حاوی کلمه تبلیغاتی «{m['ad_word']}»" if m.get("ad_word") else ""
+                    rec_lines.append(f"- {t_str}[⚠️ ارسال تبلیغات] کاربر {sender_part}{ad_w} این پیام را ارسال کرد که حذف و هشدار داده شد: «{m['text']}»")
+                elif m.get("reply_to"):
+                    r = m["reply_to"]
+                    r_target = r.get("name") or "کاربر"
+                    r_uname = f" (@{r['username'].lstrip('@')})" if r.get("username") else ""
+                    r_ref = f" در پاسخ به «{r['text']}»" if r.get("text") else ""
+                    rec_lines.append(f"- {t_str}{sender_part} خطاب به {r_target}{r_uname}{r_ref}: «{m['text']}»")
+                else:
+                    rec_lines.append(f"- {t_str}{sender_part}: «{m['text']}»")
             group_info_lines.append("\n".join(rec_lines))
 
         if target_user_info:
@@ -459,6 +529,12 @@ class GroupAI:
         messages = [{"role": "system", "content": system_content}]
 
         key = (chat_id, uid)
+        now_ts = _to_timestamp(self._now())
+        last_act = self._history_last_activity.get(key)
+        if last_act and (now_ts - last_act) > AI_SESSION_TIMEOUT_SECONDS:
+            self._history.pop(key, None)
+            self._history_last_activity.pop(key, None)
+
         history = self._history.get(key)
         if history and self.cfg.ai_history_pairs > 0:
             messages.extend(list(history)[-self.cfg.ai_history_pairs * 2:])
