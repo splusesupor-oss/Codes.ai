@@ -959,13 +959,23 @@ class GroupAI:
             self._push_history(req.chat_id, req.sender_id, "user", req.text)
             self._push_history(req.chat_id, req.sender_id, "assistant", reply_text)
 
-            for chunk in brand.chunk_lines(reply_text.split("\n"), self.cfg.max_message_chars):
-                report = await self.sender.send_text(
-                    req.client,
-                    req.peer,
-                    chunk,
-                    reply_to_msg_id=req.message_id,
-                )
+            messages_to_send = brand.format_ai_response_chunks(reply_text, self.cfg.max_message_chars)
+            for chunk_text, chunk_entities in messages_to_send:
+                if chunk_entities:
+                    report = await self.sender.send_entities(
+                        req.client,
+                        req.peer,
+                        chunk_text,
+                        chunk_entities,
+                        reply_to_msg_id=req.message_id,
+                    )
+                else:
+                    report = await self.sender.send_text(
+                        req.client,
+                        req.peer,
+                        chunk_text,
+                        reply_to_msg_id=req.message_id,
+                    )
                 if not report.ok:
                     log.error("ارسال پاسخ AI ناموفق بود: %s", report.error)
         finally:

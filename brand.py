@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import re
+from dataclasses import dataclass
 from typing import List, Optional, Tuple, Union
 
 # ---------------------------------------------------------------------------
@@ -454,6 +455,166 @@ def chunk_lines(lines, max_chars: int):
     if current:
         chunks.append("\n".join(current))
     return chunks
+
+
+# ---------------------------------------------------------------------------
+# قالب‌بندی بلاک‌های کد بومی (Native Code-Blocks) برای پیام‌های هوش مصنوعی
+# ---------------------------------------------------------------------------
+LANGUAGE_ALIASES = {
+    "py": "python",
+    "python3": "python",
+    "js": "javascript",
+    "ts": "typescript",
+    "sh": "bash",
+    "shell": "bash",
+    "zsh": "bash",
+    "yml": "yaml",
+    "md": "markdown",
+    "cs": "csharp",
+    "c++": "cpp",
+    "htm": "html",
+    "golang": "go",
+    "rb": "ruby",
+    "rs": "rust",
+}
+
+
+def normalize_code_language(lang: str) -> str:
+    """استانداردسازی شناسه زبان برنامه‌نویسی برای syntax highlighting و نشانگر زبان."""
+    cleaned = (lang or "").strip().lower()
+    return LANGUAGE_ALIASES.get(cleaned, cleaned)
+
+
+@dataclass
+class CodeSegment:
+    """بخش‌های مجزای متن هوش مصنوعی: متن عادی یا بلاک کد با زبان مشخص."""
+    content: str
+    is_code: bool = False
+    language: str = ""
+
+
+def parse_code_segments(text: str) -> list[CodeSegment]:
+    """تفکیک دقیق متن پاسخ هوش مصنوعی به قطعات متن معمولی و بلاک‌های کد حصاردار (Fenced Code Blocks)."""
+    if not text:
+        return []
+    segments: list[CodeSegment] = []
+    pat = re.compile(r"```([a-zA-Z0-9_+#.-]*)[ \t]*\r?\n([\s\S]*?)\r?\n?```")
+    last_idx = 0
+    for m in pat.finditer(text):
+        start, end = m.span()
+        if start > last_idx:
+            pre_text = text[last_idx:start]
+            if pre_text:
+                segments.append(CodeSegment(content=pre_text, is_code=False))
+        lang = normalize_code_language(m.group(1))
+        code = m.group(2)
+        segments.append(CodeSegment(content=code, is_code=True, language=lang))
+        last_idx = end
+
+    if last_idx < len(text):
+        remaining = text[last_idx:]
+        unclosed_match = re.search(r"```([a-zA-Z0-9_+#.-]*)[ \t]*\r?\n([\s\S]*)$", remaining)
+        if unclosed_match:
+            u_start, _ = unclosed_match.span()
+            if u_start > 0:
+                segments.append(CodeSegment(content=remaining[:u_start], is_code=False))
+            lang = normalize_code_language(unclosed_match.group(1))
+            code = unclosed_match.group(2)
+            segments.append(CodeSegment(content=code, is_code=True, language=lang))
+        elif remaining:
+            segments.append(CodeSegment(content=remaining, is_code=False))
+    return segments
+
+
+def split_large_segment(seg: CodeSegment, max_chars: int) -> list[CodeSegment]:
+    """تقسیم قطعات بزرگتر از سقف طول پیام با حفظ پیوستگی کد و خطوط."""
+    if utf16_len(seg.content) <= max_chars:
+        return [seg]
+    lines = seg.content.splitlines(keepends=True)
+    result: list[CodeSegment] = []
+    curr_content = []
+    curr_len = 0
+    for line in lines:
+        line_len = utf16_len(line)
+        if curr_content and curr_len + line_len > max_chars:
+            result.append(CodeSegment(content="".join(curr_content), is_code=seg.is_code, language=seg.language))
+            curr_content = []
+            curr_len = 0
+        if line_len > max_chars:
+            if curr_content:
+                result.append(CodeSegment(content="".join(curr_content), is_code=seg.is_code, language=seg.language))
+                curr_content = []
+                curr_len = 0
+            for i in range(0, len(line), max_chars):
+                result.append(CodeSegment(content=line[i:i + max_chars], is_code=seg.is_code, language=seg.language))
+            continue
+        curr_content.append(line)
+        curr_len += line_len
+    if curr_content:
+        result.append(CodeSegment(content="".join(curr_content), is_code=seg.is_code, language=seg.language))
+    return result
+
+
+def build_chunk_message(chunk_segments: list[CodeSegment]) -> tuple[str, list[object]]:
+    """تولید متن تمیز پیام و entityهای MessageEntityPre متناظر با آفست و طول دقیق UTF-16."""
+    from splusthon.tl.types import MessageEntityPre
+
+    chunk_text_parts: list[str] = []
+    entities: list[object] = []
+
+    for seg in chunk_segments:
+        if not seg.content:
+            continue
+        start_char_idx = len("".join(chunk_text_parts))
+        chunk_text_parts.append(seg.content)
+        if seg.is_code:
+            current_full = "".join(chunk_text_parts)
+            off = utf16_offset(current_full, start_char_idx)
+            length = utf16_len(seg.content)
+            if length > 0:
+                entities.append(MessageEntityPre(offset=off, length=length, language=seg.language or ""))
+
+    full_text = "".join(chunk_text_parts)
+    return full_text, entities
+
+
+def format_ai_response_chunks(text: str, max_chars: int = 3500) -> list[tuple[str, list[object]]]:
+    """فرمت‌بندی کامل پاسخ هوش مصنوعی و تبدیل بلاک‌های کد مارک‌داون به بلاک‌های بومی Soroush Plus / MTProto."""
+    if not text:
+        return []
+    if "```" not in text:
+        return [(c, []) for c in chunk_lines(text.split("\n"), max_chars)]
+
+    raw_segments = parse_code_segments(text)
+    if not any(s.is_code for s in raw_segments):
+        return [(c, []) for c in chunk_lines(text.split("\n"), max_chars)]
+
+    refined_segments: list[CodeSegment] = []
+    for s in raw_segments:
+        refined_segments.extend(split_large_segment(s, max_chars))
+
+    chunks_of_segments: list[list[CodeSegment]] = []
+    current_chunk: list[CodeSegment] = []
+    current_chunk_len = 0
+
+    for s in refined_segments:
+        s_len = utf16_len(s.content)
+        if current_chunk and current_chunk_len + s_len > max_chars:
+            chunks_of_segments.append(current_chunk)
+            current_chunk = []
+            current_chunk_len = 0
+        current_chunk.append(s)
+        current_chunk_len += s_len
+
+    if current_chunk:
+        chunks_of_segments.append(current_chunk)
+
+    result = []
+    for c_segs in chunks_of_segments:
+        msg_text, ents = build_chunk_message(c_segs)
+        if msg_text:
+            result.append((msg_text, ents))
+    return result
 
 
 # ---------------------------------------------------------------------------
