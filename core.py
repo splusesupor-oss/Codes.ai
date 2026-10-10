@@ -176,6 +176,8 @@ def match_ai_command(text: str, cfg: Config) -> Optional[str]:
     if not text or not text.strip():
         return None
     norm = normalize_text(text)
+    if norm == "ai usage":
+        return "usage"
     if norm == "ai list x":
         return "listx"
     if norm == "ai list":
@@ -508,12 +510,15 @@ class BotCore:
             return
 
         # -------------------------------------------------------------
-        # ط) دستورهای مدیریت هوش مصنوعی: ai online / ai of / ai list / ai list x / ai L
+        # ط) دستورهای مدیریت هوش مصنوعی: ai online / ai of / ai list / ai list x / ai L / ai usage
         # -------------------------------------------------------------
         ai_command = match_ai_command(text, self.cfg)
         if ai_command is not None:
             if is_group:
                 await self.ai.handle_admin_command(client, event, ai_command)
+            else:
+                if self.store.is_owner(sender_id) and ai_command == "usage":
+                    await self.ai.handle_admin_command(client, event, ai_command)
             return
 
         # -------------------------------------------------------------

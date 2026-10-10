@@ -288,6 +288,20 @@ def utc_day(now: Optional[_dt.datetime] = None) -> str:
     return now.astimezone(_dt.timezone.utc).strftime("%Y-%m-%d")
 
 
+def calculate_neurons(model_id: str, prompt_tokens: int, completion_tokens: int) -> float:
+    """محاسبه دقیق تعداد نورون‌های مصرفی Cloudflare Workers AI بر اساس مدل و توکن‌های ورودی/خروجی."""
+    mid = (model_id or "").lower()
+    if "70b" in mid:
+        # Llama 3.3 70B fp8-fast: ~26.64 Neurons / 1K input, ~204.82 Neurons / 1K output
+        return (prompt_tokens / 1000.0) * 26.64 + (completion_tokens / 1000.0) * 204.82
+    elif "qwen" in mid or "32b" in mid:
+        # Qwen 2.5 Coder 32B: ~60.00 Neurons / 1K input, ~90.91 Neurons / 1K output
+        return (prompt_tokens / 1000.0) * 60.00 + (completion_tokens / 1000.0) * 90.91
+    else:
+        # Llama 3.1 8B fp8-fast (پیش‌فرض): ~4.09 Neurons / 1K input, ~34.91 Neurons / 1K output
+        return (prompt_tokens / 1000.0) * 4.09 + (completion_tokens / 1000.0) * 34.91
+
+
 class GroupAI:
     """مدیریت وضعیت، صف‌های ایزوله و اجرای درخواست‌های AI برای گروه‌ها."""
 
@@ -325,6 +339,11 @@ class GroupAI:
         self._group_members: dict[int, OrderedDict[int, dict]] = {}
         # صف مستقل به ازای هر گروه
         self.queue_manager = GroupQueueManager(self._process_single_request)
+        # ثبت واقعی مصرف توکن بر اساس گزارش API مدل
+        self.last_token_usage: dict[int, dict] = {}
+        self.total_tokens_used: dict[str, int] = {"prompt": 0, "completion": 0, "total": 0}
+        # آمار مصرف روزانه بر اساس تقویم UTC (همگام با چرخه ریست روزانه Workers AI)
+        self._daily_usage: dict[str, dict[str, dict[str, int]]] = {}
 
     # ------------------------------------------------------------------ کمکی‌ها
     def get_history(self, chat_id: int, user_id: int) -> list[dict]:
@@ -482,8 +501,47 @@ class GroupAI:
             self._history[key] = history
             if len(self._history) > 1000:
                 self._history.popitem(last=False)
-        history.append({"role": role, "content": content[: self.cfg.ai_max_input_chars]})
+        # کنترل سقف طول پیام در تاریخچه (حداکثر ۶۰۰ کاراکتر) برای صرفه‌جویی در توکن‌ها و جلوگیری از تورم کانتکست
+        capped_content = content[:600] if len(content) > 600 else content
+        history.append({"role": role, "content": capped_content})
         self._history_last_activity[key] = now_ts
+
+    @staticmethod
+    def _needs_group_history(user_text: str) -> bool:
+        """تشخیص نیاز به تاریخچه پیام‌های اخیر گروه (فقط هنگام پرسش درباره بحث، رویدادها، خلاصه، پیام‌ها یا تبلیغات)."""
+        if not user_text:
+            return False
+        text = user_text.lower()
+        keywords = (
+            "بحث", "چت", "پیام", "حرف", "صحبت", "اتفاق", "اوضاع", "رویداد",
+            "تبلیغ", "اسپم", "خلاصه", "سابقه", "تاریخچه", "جریان", "قضیه",
+            "کی گفت", "چی گفت", "کی چی گفت", "چی شد", "چخبر", "چه خبر",
+            "گفتگو", "گفت‌وگو", "مکالمه", "ماجرا", "ساکت", "فعالیت"
+        )
+        return any(kw in text for kw in keywords)
+
+    @staticmethod
+    def _needs_group_members(user_text: str) -> bool:
+        """تشخیص نیاز به فهرست اعضای گروه (فقط هنگام پرسش درباره کاربران، یافتن یک فرد، اسامی یا اعضا)."""
+        if not user_text:
+            return False
+        text = user_text.lower()
+        keywords = (
+            "عضو", "اعضا", "کاربر", "پیدا", "پیداش", "حضور", "کسی هست", "کی هست",
+            "کی توی گروه", "کی تو گروه", "شناسه", "یوزر", "اسامی", "لیست اعضا",
+            "فهرست اعضا", "چند نفریم", "چند نفر", "تعداد اعضا"
+        )
+        return any(kw in text for kw in keywords)
+
+    def _needs_group_metadata(self, user_text: str) -> bool:
+        """تشخیص نیاز به اطلاعات گروه (نام، مالک، ادمین‌ها) بر اساس پرسش کاربر."""
+        if not user_text:
+            return False
+        text = user_text.lower()
+        keywords = (
+            "گروه", "مالک", "سازنده", "صاحب", "ادمین", "مدیر", "مدیران"
+        )
+        return any(kw in text for kw in keywords) or self._needs_group_history(user_text) or self._needs_group_members(user_text)
 
     def _build_messages(
         self,
@@ -499,29 +557,38 @@ class GroupAI:
         else:
             uid = int(user_id or 0)
 
-        # اطلاعات گروه و آخرین پیام‌های تبادل‌شده (در صورت وجود)
+        # ساخت هوشمند کانتکست: حذف پیام‌های گروه و لیست اعضا از درخواست‌های عادی
         group_info_lines = []
-        meta = self.get_group_metadata(chat_id)
-        has_real_meta = bool(
-            (meta.get("owner_label") and meta.get("owner_label") != "مالک یافت نشد")
-            or meta.get("admin_labels")
-        )
-        if meta and has_real_meta:
-            g_name = meta.get("group_name") or "گروه"
-            owner = meta.get("owner_label")
-            admins = meta.get("admin_labels")
-            count = meta.get("members_count")
+        user_query = user_text or ""
+        needs_history = self._needs_group_history(user_query)
+        needs_members = self._needs_group_members(user_query)
+        needs_metadata = self._needs_group_metadata(user_query)
 
-            info = ["اطلاعات گروه فعلی:"]
-            info.append(f"• نام گروه: {g_name}")
-            if owner and owner != "مالک یافت نشد":
-                info.append(f"• مالک (سازنده) اصلی گروه: {owner}")
-            if admins:
-                info.append(f"• مدیران (ادمین‌های) گروه: {', '.join(admins)}")
-            if count:
-                info.append(f"• تعداد اعضای شناخته‌شده: {count}")
-            group_info_lines.append("\n".join(info))
+        # متادیتای گروه (فقط در صورت نیاز یا پرسش مرتبط)
+        if needs_metadata:
+            meta = self.get_group_metadata(chat_id)
+            has_real_meta = bool(
+                (meta.get("owner_label") and meta.get("owner_label") != "مالک یافت نشد")
+                or meta.get("admin_labels")
+            )
+            if meta and has_real_meta:
+                g_name = meta.get("group_name") or "گروه"
+                owner = meta.get("owner_label")
+                admins = meta.get("admin_labels")
+                count = meta.get("members_count")
 
+                info = ["اطلاعات گروه فعلی:"]
+                info.append(f"• نام گروه: {g_name}")
+                if owner and owner != "مالک یافت نشد":
+                    info.append(f"• مالک (سازنده) اصلی گروه: {owner}")
+                if admins:
+                    info.append(f"• مدیران (ادمین‌های) گروه: {', '.join(admins)}")
+                if count:
+                    info.append(f"• تعداد اعضای شناخته‌شده: {count}")
+                group_info_lines.append("\n".join(info))
+
+        # فهرست اعضای گروه (فقط در صورتی که کاربر مشخصاً درباره اعضا/یافتن کاربر پرسیده باشد)
+        if needs_members:
             members = self.get_group_members(chat_id)
             if members:
                 mem_lines = ["فهرست اعضا و کاربران شناخته‌شده در گروه (در صورت پرسش درباره حضور یا مشخصات یک کاربر در گروه، از این اطلاعات با دقت استفاده کن):"]
@@ -531,26 +598,28 @@ class GroupAI:
                     mem_lines.append(f"• نام: {u_disp} | نام کاربری: {u_handle} | شناسه: {m_id}")
                 group_info_lines.append("\n".join(mem_lines))
 
-        recent = self.get_recent_group_messages(chat_id)
-        if recent:
-            rec_lines = ["آخرین پیام‌های ردوبدل‌شده اعضای گروه و رویدادهای ۵۰ دقیقه اخیر (شامل اینکه چه کسی به چه کسی پیام داده، چه گفته شده و چه کلمات تبلیغاتی ارسال شده است):"]
-            for m in recent[-15:]:
-                t_str = f"[{m['time']}] " if m.get("time") else ""
-                u_str = f" (@{m['username']})" if m.get("username") else ""
-                sender_part = f"{m['sender']}{u_str}"
+        # پیام‌های اخیر گروه (فقط در صورتی که کاربر درباره بحث، خلاصه چت یا رویدادهای گروه پرسیده باشد)
+        if needs_history:
+            recent = self.get_recent_group_messages(chat_id)
+            if recent:
+                rec_lines = ["آخرین پیام‌های ردوبدل‌شده اعضای گروه و رویدادهای ۵۰ دقیقه اخیر (شامل اینکه چه کسی به چه کسی پیام داده، چه گفته شده و چه کلمات تبلیغاتی ارسال شده است):"]
+                for m in recent[-15:]:
+                    t_str = f"[{m['time']}] " if m.get("time") else ""
+                    u_str = f" (@{m['username']})" if m.get("username") else ""
+                    sender_part = f"{m['sender']}{u_str}"
 
-                if m.get("is_ad"):
-                    ad_w = f" حاوی کلمه تبلیغاتی «{m['ad_word']}»" if m.get("ad_word") else ""
-                    rec_lines.append(f"- {t_str}[⚠️ ارسال تبلیغات] کاربر {sender_part}{ad_w} این پیام را ارسال کرد که حذف و هشدار داده شد: «{m['text']}»")
-                elif m.get("reply_to"):
-                    r = m["reply_to"]
-                    r_target = r.get("name") or "کاربر"
-                    r_uname = f" (@{r['username'].lstrip('@')})" if r.get("username") else ""
-                    r_ref = f" در پاسخ به «{r['text']}»" if r.get("text") else ""
-                    rec_lines.append(f"- {t_str}{sender_part} خطاب به {r_target}{r_uname}{r_ref}: «{m['text']}»")
-                else:
-                    rec_lines.append(f"- {t_str}{sender_part}: «{m['text']}»")
-            group_info_lines.append("\n".join(rec_lines))
+                    if m.get("is_ad"):
+                        ad_w = f" حاوی کلمه تبلیغاتی «{m['ad_word']}»" if m.get("ad_word") else ""
+                        rec_lines.append(f"- {t_str}[⚠️ ارسال تبلیغات] کاربر {sender_part}{ad_w} این پیام را ارسال کرد که حذف و هشدار داده شد: «{m['text']}»")
+                    elif m.get("reply_to"):
+                        r = m["reply_to"]
+                        r_target = r.get("name") or "کاربر"
+                        r_uname = f" (@{r['username'].lstrip('@')})" if r.get("username") else ""
+                        r_ref = f" در پاسخ به «{r['text']}»" if r.get("text") else ""
+                        rec_lines.append(f"- {t_str}{sender_part} خطاب به {r_target}{r_uname}{r_ref}: «{m['text']}»")
+                    else:
+                        rec_lines.append(f"- {t_str}{sender_part}: «{m['text']}»")
+                group_info_lines.append("\n".join(rec_lines))
 
         if asker_info:
             a_name = asker_info.get("display_name") or "کاربر"
@@ -620,6 +689,34 @@ class GroupAI:
             return get_model_profile(pid)
         return None
 
+    def get_daily_usage_summary(self) -> dict:
+        """محاسبه خلاصه وضعیت مصرف روزانه سهمیه ۱۰٬۰۰۰ نورون Workers AI برای مالک سراسری."""
+        u_day = utc_day(self._now(_dt.timezone.utc))
+        day_stats = self._daily_usage.get(u_day, {})
+        total_p = 0
+        total_c = 0
+        total_neurons = 0.0
+        total_reqs = 0
+        for mid, data in day_stats.items():
+            total_p += data["prompt"]
+            total_c += data["completion"]
+            total_reqs += data["requests"]
+            total_neurons += calculate_neurons(mid, data["prompt"], data["completion"])
+
+        remaining_neurons = max(0.0, 10000.0 - total_neurons)
+        return {
+            "date_utc": u_day,
+            "total_prompt_tokens": total_p,
+            "total_completion_tokens": total_c,
+            "total_tokens": total_p + total_c,
+            "total_requests": total_reqs,
+            "consumed_neurons": total_neurons,
+            "remaining_neurons": remaining_neurons,
+            "percent_remaining": (remaining_neurons / 10000.0) * 100.0,
+            "percent_consumed": (total_neurons / 10000.0) * 100.0,
+            "models_breakdown": day_stats,
+        }
+
     # ------------------------------------------------- دستورهای مدیریتی
     async def handle_admin_command(self, client, event, command: str) -> bool:
         sender_id = int(getattr(event, "sender_id", 0) or 0)
@@ -667,6 +764,20 @@ class GroupAI:
                 )
                 await self._reply(client, event, msg)
                 return True
+            return True
+
+        # دستور گزارش سهمیه و هزینه Workers AI: ai usage (فقط مالک سراسری)
+        if command == "usage":
+            if not self._is_owner(sender_id):
+                log.info("دستور ai usage توسط کاربر غیرمالک سراسری %s رد شد", sender_id)
+                await self._reply(
+                    client, event, "⚠️ مشاهده گزارش سهمیه و مصرف واقعی فقط برای مالک سراسری ربات مجاز است."
+                )
+                return True
+
+            summary = self.get_daily_usage_summary()
+            report_text = brand.format_ai_usage_report(summary)
+            await self._reply(client, event, report_text)
             return True
 
         # سایر دستورات نیازمند دسترسی مدیریت (مالک سراسری یا مالک ثبت‌شده) هستند
@@ -945,6 +1056,41 @@ class GroupAI:
                 max_retries=self._retry_max,
                 base_delay=self._retry_base_delay,
             )
+
+            # ثبت و اندازه‌گیری واقعی مصرف توکن ورودی و خروجی از روی گزارش API مدل (بدون تخمین عددی خام)
+            if response.usage:
+                p_tok = int(response.usage.get("prompt_tokens") or response.usage.get("input_tokens") or 0)
+                c_tok = int(response.usage.get("completion_tokens") or response.usage.get("output_tokens") or 0)
+                tot_tok = int(response.usage.get("total_tokens") or (p_tok + c_tok))
+                self.last_token_usage[req.chat_id] = {
+                    "prompt_tokens": p_tok,
+                    "completion_tokens": c_tok,
+                    "total_tokens": tot_tok,
+                    "model": model_override or getattr(self.ai, "model", ""),
+                }
+                self.total_tokens_used["prompt"] += p_tok
+                self.total_tokens_used["completion"] += c_tok
+                self.total_tokens_used["total"] += tot_tok
+
+                u_day = utc_day(self._now(_dt.timezone.utc))
+                if u_day not in self._daily_usage:
+                    self._daily_usage[u_day] = {}
+                m_key = model_override or getattr(self.ai, "model", "")
+                if m_key not in self._daily_usage[u_day]:
+                    self._daily_usage[u_day][m_key] = {"prompt": 0, "completion": 0, "total": 0, "requests": 0}
+                self._daily_usage[u_day][m_key]["prompt"] += p_tok
+                self._daily_usage[u_day][m_key]["completion"] += c_tok
+                self._daily_usage[u_day][m_key]["total"] += tot_tok
+                self._daily_usage[u_day][m_key]["requests"] += 1
+
+                log.info(
+                    "📊 مصرف واقعی توکن مدل Cloudflare (گروه: %s، مدل: %s): ورودی=%s، خروجی=%s، کل=%s",
+                    req.chat_id,
+                    model_override or getattr(self.ai, "model", ""),
+                    p_tok,
+                    c_tok,
+                    tot_tok,
+                )
 
             # تصفیه تگ‌های تفکر مدل‌های استدلالی مانند DeepSeek-R1 (<think>...</think>)
             cleaned_text = brand.clean_model_output(response.text)

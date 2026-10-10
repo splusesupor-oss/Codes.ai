@@ -260,9 +260,13 @@ def extract_finish_reason(payload: dict) -> Optional[str]:
 
 
 def extract_usage(payload: dict) -> Optional[dict]:
+    if not isinstance(payload, dict):
+        return None
     result = payload.get("result")
     if isinstance(result, dict) and isinstance(result.get("usage"), dict):
         return result["usage"]
+    if isinstance(payload.get("usage"), dict):
+        return payload["usage"]
     return None
 
 

@@ -229,7 +229,8 @@ class FakeAI:
         if self.error is not None:
             raise self.error
         from ai_client import AIResponse
-        return AIResponse(text=self.reply)
+        usage = getattr(self, "usage", None)
+        return AIResponse(text=self.reply, usage=usage)
 
     async def close(self) -> None:
         pass
