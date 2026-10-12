@@ -1,18 +1,13 @@
 """
 تست‌های رگرسیون و جامع ساختار سه‌مدلی Fox AI (Groq و Cloudflare Workers AI).
 
-پوشش کامل:
-  ۱) هدایت خودکار (Auto-Routing) بر اساس نیت کاربر:
-     - مدل ۱ (Groq openai/gpt-oss-20b) برای احوال‌پرسی و چت کوتاه
-     - مدل ۳ (Groq openai/gpt-oss-120b) برای برنامه‌نویسی و کدهای تخصصی
-     - مدل ۲ (Cloudflare @cf/meta/llama-3.3-70b-instruct-fp8-fast) برای استدلال و تحلیل
-  ۲) مصونیت واژگان ابهام‌آمیز فارسی (کد ملی، کد پستی، برنامه غذایی، خطای شناختی) از رفتن به مدل ۳
-  ۳) اولویت مطلق انتخاب دستی مالک سراسری (ai model 1/2/3) بر حالت خودکار
-  ۴) عدم تلاش مجدد (No Retry) در خطاهای HTTP 429 و 401/403 کلاینت Groq
-  ۵) رفتار عدم تنظیم کلید Groq:
-     - خطای صریح در صورت انتخاب دستی مدل Groq
-     - فال‌بک ایمن به مدل ۲ در حالت خودکار
-  ۶) سازگاری کامل با FakeAI و FakeClient موجود در مخزن
+پوشش کامل قوانین تفکیک ارائه‌دهنده‌ها:
+  ۱) مدل ۱ و ۳: منحصراً Groq API بدون ارسال هرگونه درخواست به Cloudflare
+  ۲) مدل ۲: منحصراً Cloudflare Workers AI بدون ارسال هرگونه درخواست به Groq
+  ۳) عدم وجود هرگونه fallback به provider اشتباه در صورت خطا یا نبود کلید
+  ۴) مصونیت واژگان ابهام‌آمیز فارسی (کد ملی، کد پستی، برنامه غذایی، خطای شناختی) و هدایت به مدل ۲
+  ۵) اولویت مطلق انتخاب دستی مالک سراسری (ai model 1/2/3)
+  ۶) عدم تلاش مجدد (No Retry) در خطاهای HTTP 429 و 401/403 کلاینت Groq
 """
 
 import asyncio
@@ -23,7 +18,6 @@ from ai_client import AIConfigError, AIQuotaExceeded, GroqAI
 from ai_service import GroupAI, classify_query_intent
 from config import Config
 from models import MODEL_PROFILES, get_model_profile
-from sender import BrandSender
 from storage import OwnerStore
 from tests.fakes import FakeAI, FakeClient, FakeEvent, FakeReplyMessage, FakeSender
 
@@ -111,6 +105,83 @@ class TestThreeModelRouting(unittest.TestCase):
         self.assertEqual(p_manual.id, 2)
         self.assertEqual(p_manual.provider, "cloudflare")
 
+    def test_model_1_and_3_only_call_groq_never_cloudflare(self):
+        chat_id = 9002
+        self.store.activate_group(chat_id, 100)
+
+        # ۱) تست اجرای مدل ۱ (Groq)
+        req1 = MagicMock(
+            chat_id=chat_id,
+            sender_id=10,
+            text="سلام صبح بخیر",
+            model_profile=MODEL_PROFILES[1],
+            target_user_info=None,
+            asker_info=None,
+            client=MagicMock(),
+            peer=None,
+        )
+        run(self.service._process_single_request(req1))
+        self.assertEqual(len(self.fake_groq.calls), 1)
+        self.assertEqual(self.fake_groq.calls[-1]["model"], MODEL_PROFILES[1].model_id)
+        self.assertEqual(len(self.fake_cf.calls), 0)  # کلودفلر صفر تماس
+
+        # ۲) تست اجرای مدل ۳ (Groq)
+        req3 = MagicMock(
+            chat_id=chat_id,
+            sender_id=10,
+            text="def foo(): pass",
+            model_profile=MODEL_PROFILES[3],
+            target_user_info=None,
+            asker_info=None,
+            client=MagicMock(),
+            peer=None,
+        )
+        run(self.service._process_single_request(req3))
+        self.assertEqual(len(self.fake_groq.calls), 2)
+        self.assertEqual(self.fake_groq.calls[-1]["model"], MODEL_PROFILES[3].model_id)
+        self.assertEqual(len(self.fake_cf.calls), 0)  # کلودفلر همچنان صفر تماس
+
+    def test_model_2_only_calls_cloudflare_never_groq(self):
+        chat_id = 9003
+        self.store.activate_group(chat_id, 100)
+
+        req2 = MagicMock(
+            chat_id=chat_id,
+            sender_id=10,
+            text="تحلیل اثر تورم بر اقتصاد",
+            model_profile=MODEL_PROFILES[2],
+            target_user_info=None,
+            asker_info=None,
+            client=MagicMock(),
+            peer=None,
+        )
+        run(self.service._process_single_request(req2))
+        self.assertEqual(len(self.fake_cf.calls), 1)
+        self.assertEqual(self.fake_cf.last_kwargs.get("model"), MODEL_PROFILES[2].model_id)
+        self.assertEqual(len(self.fake_groq.calls), 0)  # گروک صفر تماس
+
+    def test_no_fallback_to_cloudflare_when_groq_fails_or_unconfigured(self):
+        chat_id = 9004
+        self.store.activate_group(chat_id, 100)
+        self.fake_groq._available = False  # کلید ناموجود یا سرویس از کار افتاده
+
+        req = MagicMock(
+            chat_id=chat_id,
+            sender_id=10,
+            text="سلام",
+            model_profile=MODEL_PROFILES[1],
+            target_user_info=None,
+            asker_info=None,
+            client=MagicMock(),
+            peer=None,
+        )
+        # طبق قانون شماره ۴: مدل‌های ۱ و ۳ نباید به Cloudflare فال‌بک کنند
+        with self.assertRaises(AIConfigError):
+            run(self.service._process_single_request(req))
+
+        # کلودفلر نباید هیچ تماسی دریافت کرده باشد
+        self.assertEqual(len(self.fake_cf.calls), 0)
+
     def test_groq_no_retry_on_429(self):
         groq = GroqAI("gsk_fake_key")
         mock_response = MagicMock()
@@ -126,25 +197,6 @@ class TestThreeModelRouting(unittest.TestCase):
 
         # فقط ۱ بار فراخوانی شده و تکرار نشده است
         self.assertEqual(session_mock.post.call_count, 1)
-
-    def test_unconfigured_groq_fallback_in_auto_mode(self):
-        chat_id = 9002
-        self.store.activate_group(chat_id, 100)
-        self.fake_groq._available = False  # بدون کلید Groq
-
-        req = MagicMock(
-            chat_id=chat_id,
-            sender_id=10,
-            text="سلام",
-            model_profile=MODEL_PROFILES[1],
-            target_user_info=None,
-            asker_info=None,
-            client=MagicMock(),
-            peer=None,
-        )
-        run(self.service._process_single_request(req))
-        self.assertTrue(len(self.fake_cf.calls) > 0)
-        self.assertEqual(len(self.fake_groq.calls), 0)
 
 
 if __name__ == "__main__":

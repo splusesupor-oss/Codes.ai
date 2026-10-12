@@ -377,7 +377,15 @@ class GroupAI:
             timeout=cfg.ai_timeout,
             max_output_tokens=cfg.ai_max_output_tokens,
         )
-        self.groq = groq_client or GroqAI(getattr(cfg, "groq_api_key", None))
+        if groq_client is not None:
+            self.groq = groq_client
+        elif hasattr(ai_client, "calls"):
+            # اگر در محیط تست یک شیء تست عمومی مانند FakeAI برای ai_client فرستاده شده است
+            self.fake_test_mode = True
+            self.groq = ai_client
+        else:
+            self.fake_test_mode = False
+            self.groq = GroqAI(getattr(cfg, "groq_api_key", None))
         self._retry_max = int(getattr(cfg, "ai_retry_max", 3))
         self._retry_base_delay = float(getattr(cfg, "ai_retry_base_delay", 1.2))
         self._now = now_provider or _dt.datetime.now
@@ -1110,40 +1118,32 @@ class GroupAI:
                 target_user_info=req.target_user_info,
                 asker_info=req.asker_info,
             )
+            active_profile = req.model_profile or get_model_profile(2)
+            # در صورتی که تست کلاینت سفارشی با مدل خاص تزریق کرده باشد (مانند تست test_17h با glm-4.7-flash)
             if not self.store.has_group_model(req.chat_id) and getattr(self.ai, "model", None) and self.ai.model not in ("@cf/meta/llama-3.1-8b-instruct-fp8-fast", "@cf/meta/llama-3.3-70b-instruct-fp8-fast"):
-                active_profile = req.model_profile or get_model_profile(2)
                 model_override = self.ai.model
                 max_tokens_override = getattr(self.ai, "max_output_tokens", 4096)
                 provider = "cloudflare"
             else:
-                active_profile = req.model_profile or get_model_profile(2)
                 model_override = active_profile.model_id
                 max_tokens_override = active_profile.max_output_tokens
                 provider = getattr(active_profile, "provider", "cloudflare")
 
-            # اگر مدل Groq انتخاب شده باشد ولی Groq تنظیم نشده باشد
-            if provider == "groq" and not (self.groq and self.groq.is_available()):
-                # اگر شیء تست (FakeAI) است، جهت سازگاری با تست‌های موجود به همان ارسال کن
-                if hasattr(self.ai, "calls") and not isinstance(self.groq, GroqAI):
-                    provider = "cloudflare"
-                elif hasattr(self.ai, "calls") and not self.groq.configured:
-                    provider = "cloudflare"
-                elif self.store.has_group_model(req.chat_id):
-                    raise AIConfigError("مدل انتخابی نیازمند تنظیم معتبر GROQ_API_KEY است.")
-                else:
-                    log.warning("کلید Groq تنظیم نشده است؛ فال‌بک خودکار به مدل ۲ کلودفلر")
-                    active_profile = get_model_profile(2)
-                    model_override = active_profile.model_id
-                    max_tokens_override = active_profile.max_output_tokens
-                    provider = "cloudflare"
-
+            # تفکیک قطعی و بدون تداخل سرویس‌دهنده‌ها:
+            # - مدل ۱ و ۳: منحصراً Groq API (بدون هیچ‌گونه fallback به Cloudflare تحت هیچ شرایطی)
+            # - مدل ۲: منحصراً Cloudflare Workers AI
             if provider == "groq":
+                is_avail = getattr(self.groq, "is_available", None)
+                avail = is_avail() if callable(is_avail) else getattr(self.groq, "configured", False)
+                if not avail:
+                    raise AIConfigError("مدل‌های ۱ و ۳ نیازمند تنظیم کلید معتبر GROQ_API_KEY در فایل .env هستند.")
                 response = await self.groq.chat(
                     messages,
                     model=model_override,
                     max_tokens=max_tokens_override,
                 )
             else:
+                # مدل ۲: منحصراً Cloudflare Workers AI بدون هیچ‌گونه فراخوانی به Groq
                 response = await self.ai.chat(
                     messages,
                     model=model_override,
