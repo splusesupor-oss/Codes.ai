@@ -553,3 +553,113 @@ class CloudflareAI:
             f"{'، استدلال داشت' if reasoning else ''}).",
             retryable=True,
         )
+
+
+class GroqAI:
+    """کلاینت رسمی و مستقیم Groq API (سازگار با پروتکل OpenAI Chat Completions).
+
+    از endpoint استاندارد: https://api.groq.com/openai/v1/chat/completions استفاده می‌کند.
+    """
+
+    API_BASE = "https://api.groq.com/openai/v1/chat/completions"
+
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        *,
+        timeout: float = 40.0,
+        session=None,
+    ):
+        self.api_key = (api_key or "").strip()
+        self.timeout = timeout
+        self._session = session
+        self._own_session = None
+
+    @property
+    def configured(self) -> bool:
+        low = (self.api_key or "").strip().lower()
+        return bool(low and not low.startswith(("your_", "your-", "xxx", "changeme", "<")))
+
+    def is_available(self) -> bool:
+        return self.configured
+
+    async def _get_session(self):
+        if self._session is not None:
+            return self._session, False
+        import aiohttp
+        session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.timeout))
+        self._own_session = session
+        return session, True
+
+    async def close(self) -> None:
+        if self._own_session is not None:
+            await self._own_session.close()
+            self._own_session = None
+
+    async def chat(
+        self,
+        messages: list[dict],
+        *,
+        model: str,
+        max_tokens: Optional[int] = 2048,
+        temperature: float = 0.6,
+        max_retries: int = 0,
+        base_delay: float = 1.0,
+    ) -> AIResponse:
+        """ارسال پیام‌ها به Groq API."""
+        if not self.configured:
+            raise AIConfigError("کلید GROQ_API_KEY تنظیم نشده است.")
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": int(max_tokens or 2048),
+            "temperature": float(temperature),
+        }
+
+        session, owns = await self._get_session()
+        try:
+            async with session.post(self.API_BASE, json=payload, headers=headers) as resp:
+                status = resp.status
+                raw = await resp.text()
+        except asyncio.TimeoutError as exc:
+            raise AIError(f"Groq Timeout ({self.timeout}s)", retryable=True) from exc
+        except Exception as exc:
+            raise AIError(f"Groq Network Error: {exc}", retryable=True) from exc
+        finally:
+            if owns:
+                await self.close()
+
+        if status == 429:
+            raise AIQuotaExceeded(f"Groq Rate Limit/Quota Reached (HTTP 429): {raw[:150]}")
+        if status in (401, 403):
+            raise AIConfigError(f"خطای دسترسی یا کلید نامعتبر Groq (HTTP {status})")
+
+        try:
+            data = json.loads(raw)
+        except Exception as exc:
+            raise AIError(f"پاسخ نامعتبر از سرور Groq (HTTP {status}): {raw[:120]}") from exc
+
+        if status >= 400:
+            err_msg = ""
+            if isinstance(data, dict) and "error" in data:
+                err_msg = data["error"].get("message", "")
+            raise AIError(f"خطای Groq (HTTP {status}): {err_msg or raw[:120]}")
+
+        choices = data.get("choices") or []
+        if not choices:
+            raise AIError("پاسخ خالی از Groq دریافت شد.")
+
+        msg = choices[0].get("message") or {}
+        content = msg.get("content") or ""
+        usage_data = data.get("usage")
+
+        return AIResponse(
+            text=content.strip(),
+            usage=usage_data,
+            finish_reason=choices[0].get("finish_reason"),
+        )

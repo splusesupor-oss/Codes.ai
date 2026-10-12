@@ -110,6 +110,11 @@ AI_LIST_COMMAND = "ai list"         # مجاز کردن کاربرِ Reply‌ش�
 AI_LISTX_COMMAND = "ai list x"      # حذف مجوز کاربرِ Reply‌شده (مالک سراسری یا مالک ثبت‌شده)
 
 # مدل واقعی Cloudflare Workers AI
+# مدل‌های هوش مصنوعی سه‌گانه (Groq و Cloudflare)
+GROQ_API_BASE = "https://api.groq.com/openai/v1"
+GROQ_CHAT_MODEL = "openai/gpt-oss-20b"
+GROQ_CODE_MODEL = "openai/gpt-oss-120b"
+
 AI_MODEL = "@cf/meta/llama-3.1-8b-instruct-fp8-fast"
 
 # سهمیه‌ی داخلی روزانه به تفکیک هر گروه (ریست در 00:00 به وقت Asia/Tehran)
@@ -194,6 +199,9 @@ class Config:
     cloudflare_api_token: str | None = field(
         default_factory=lambda: _env_str("CLOUDFLARE_API_TOKEN")
     )
+    groq_api_key: str | None = field(
+        default_factory=lambda: _env_str("GROQ_API_KEY")
+    )
     ai_model: str = AI_MODEL
     ai_online_command: str = AI_ONLINE_COMMAND
     ai_of_command: str = AI_OF_COMMAND
@@ -246,6 +254,7 @@ class Config:
             max_message_chars=int(os.environ.get("ACOD_MAX_MESSAGE_CHARS", MAX_MESSAGE_CHARS)),
             cloudflare_account_id=os.environ.get("CLOUDFLARE_ACCOUNT_ID") or None,
             cloudflare_api_token=os.environ.get("CLOUDFLARE_API_TOKEN") or None,
+            groq_api_key=os.environ.get("GROQ_API_KEY") or None,
             ai_model=os.environ.get("ACOD_AI_MODEL", AI_MODEL),
             ai_online_command=os.environ.get("ACOD_AI_ONLINE_COMMAND", AI_ONLINE_COMMAND),
             ai_of_command=os.environ.get("ACOD_AI_OF_COMMAND", AI_OF_COMMAND),

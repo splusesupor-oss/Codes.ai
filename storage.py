@@ -56,7 +56,7 @@ CREATE TABLE IF NOT EXISTS group_registry (
     is_active        INTEGER NOT NULL DEFAULT 1,
     activated_at     TEXT NOT NULL,
     expires_at       TEXT,
-    model_profile    INTEGER NOT NULL DEFAULT 1,
+    model_profile    INTEGER,
     daily_quota      INTEGER,
     max_users        INTEGER,
     registered_owner INTEGER,
@@ -286,7 +286,7 @@ class OwnerStore:
         *,
         group_name: Optional[str] = None,
         expires_at: Optional[str] = None,
-        model_profile: int = 1,
+        model_profile: Optional[int] = None,
     ) -> bool:
         chat_id = int(chat_id)
         now_str = _now()
@@ -306,7 +306,7 @@ class OwnerStore:
             if row:
                 rec_id = row["record_id"]
                 g_name = group_name or row["group_name"]
-                m_prof = row["model_profile"] or model_profile
+                m_prof = row["model_profile"] if row["model_profile"] is not None else model_profile
                 exp = expires_at or row["expires_at"]
                 self._conn.execute(
                     """UPDATE group_registry SET
@@ -323,7 +323,7 @@ class OwnerStore:
                             expires_at, model_profile, daily_quota, max_users, registered_owner,
                             created_at, updated_at)
                        VALUES (?, ?, ?, 1, ?, ?, ?, NULL, NULL, NULL, ?, ?)""",
-                    (chat_id, rec_id, group_name, now_str, expires_at, int(model_profile), now_str, now_str),
+                    (chat_id, rec_id, group_name, now_str, expires_at, (int(model_profile) if model_profile is not None else None), now_str, now_str),
                 )
             self._conn.commit()
             return True
@@ -427,19 +427,18 @@ class OwnerStore:
             for r in rows
         ]
 
-    def set_group_model(self, chat_id: int, model_profile: int) -> bool:
+    def set_group_model(self, chat_id: int, model_profile: Optional[int]) -> bool:
         chat_id = int(chat_id)
-        model_profile = int(model_profile)
+        pid = (int(model_profile) if model_profile is not None else None) if model_profile is not None else None
         now_str = _now()
         with self._lock:
-            # اطمینان از وجود گروه در registry
             rec = self.get_group_record(chat_id)
             if not rec:
-                self.activate_group(chat_id, 0, model_profile=model_profile)
+                self.activate_group(chat_id, 0, model_profile=pid)
             else:
                 self._conn.execute(
                     "UPDATE group_registry SET model_profile = ?, updated_at = ? WHERE chat_id = ?",
-                    (model_profile, now_str, chat_id),
+                    (pid, now_str, chat_id),
                 )
                 self._conn.commit()
         return True

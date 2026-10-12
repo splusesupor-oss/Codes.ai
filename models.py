@@ -1,18 +1,18 @@
 """
-پروفایل‌های سه‌گانه‌ی مدل‌های هوش مصنوعی کلادفلر (Cloudflare Workers AI).
+پروفایل‌های سه‌گانه‌ی مدل‌های هوش مصنوعی (Groq و Cloudflare Workers AI).
 
 مدل‌های منتخب:
-  ۱) مدل ۱ — دستیار سریع و عمومی (Fast General Assistant):
-     @cf/meta/llama-3.1-8b-instruct-fp8-fast
-     بسیار سریع و سبک، مناسب برای پاسخ‌گویی فوری به سؤالات عمومی روزمره.
+  ۱) مدل ۱ — دستیار چت و مکالمه سریع (Groq API):
+     openai/gpt-oss-20b
+     بسیار سریع، روان و مناسب برای احوال‌پرسی، مکالمات کوتاه و گپ روزمره.
 
-  ۲) مدل ۲ — دستیار استدلالی متعادل (Balanced Reasoning Assistant):
-     @cf/zai-org/glm-4.7-flash
-     پنجره زمینه بسیار گسترده (۱۳۱ هزار توکن)، قابلیت تفکر و درک عمیق زبان فارسی و تحلیل چندمرحله‌ای.
+  ۲) مدل ۲ — دستیار استدلالی و دانش عمومی (Cloudflare Workers AI):
+     @cf/meta/llama-3.3-70b-instruct-fp8-fast
+     بدون کوچک‌ترین تغییر؛ مدل پایدار ۷۰ میلیاردی کلودفلر برای تحلیل عمیق و پاسخ به پرسش‌های عمومی.
 
-  ۳) مدل ۳ — دستیار پیشرفته استدلال و کدنویسی (Advanced Reasoning and Coding Assistant):
-     @cf/deepseek-ai/deepseek-r1-distill-qwen-32b
-     مدل پیشرفته استدلالی بر پایه Qwen2.5 و تقطیرشده از DeepSeek-R1؛ عالی در حل مسائل ریاضی، منطقی و کدنویسی.
+  ۳) مدل ۳ — دستیار تخصصی کدنویسی و دیباگ (Groq API):
+     openai/gpt-oss-120b
+     مدل پیشرفته ۱۲۰ میلیاردی منحصراً برای برنامه‌نویسی، حل الگوریتم و رفع اشکال کد.
 """
 
 from __future__ import annotations
@@ -28,21 +28,23 @@ class ModelProfile:
     id: int
     name: str              # نام فارسی برای نمایش به مدیران و کاربران
     english_name: str      # نام انگلیسی طبق مشخصات فنی
-    model_id: str          # شناسه رسمی در Workers AI
+    model_id: str          # شناسه رسمی در Workers AI یا Groq
     max_output_tokens: int
     timeout: float         # مهلت زمانی اجرای درخواست (ثانیه)
     description: str
+    provider: str = "cloudflare"  # "cloudflare" یا "groq"
 
 
 MODEL_PROFILES: dict[int, ModelProfile] = {
     1: ModelProfile(
         id=1,
-        name="دستیار سریع و عمومی",
-        english_name="Fast General Assistant",
-        model_id="@cf/meta/llama-3.1-8b-instruct-fp8-fast",
+        name="دستیار سریع و چت روزمره",
+        english_name="Fast Conversational Chat",
+        model_id="openai/gpt-oss-20b",
         max_output_tokens=2048,
         timeout=25.0,
-        description="پاسخ‌دهی سریع با دقت زبانی استاندارد و ادبیات روان فارسی بدون توهم و واژگان شکسته.",
+        description="پاسخ‌دهی آنی به احوال‌پرسی و چت‌های عمومی و سبک با دقت زبانی استاندارد فارسی (Groq).",
+        provider="groq",
     ),
     2: ModelProfile(
         id=2,
@@ -51,16 +53,18 @@ MODEL_PROFILES: dict[int, ModelProfile] = {
         model_id="@cf/meta/llama-3.3-70b-instruct-fp8-fast",
         max_output_tokens=4096,
         timeout=40.0,
-        description="مدل قدرتمند Llama 3.3 70B با پردازش سریع (FP8)، درک عمیق زبان فارسی و بدون کندی یا قطعی.",
+        description="مدل قدرتمند Llama 3.3 70B کلودفلر با پردازش سریع (FP8)، درک عمیق زبان فارسی و تحلیل منطقی.",
+        provider="cloudflare",
     ),
     3: ModelProfile(
         id=3,
-        name="دستیار پیشرفته استدلال و کدنویسی",
-        english_name="Advanced Reasoning and Coding Assistant",
-        model_id="@cf/qwen/qwen2.5-coder-32b-instruct",
+        name="دستیار تخصصی کدنویسی و الگوریتم",
+        english_name="Advanced Coding and Algorithms",
+        model_id="openai/gpt-oss-120b",
         max_output_tokens=4096,
         timeout=45.0,
-        description="استدلال عمیق، حل مسائل تحلیلی و کدنویسی تخصصی بدون مونولوگ ذهنی و با پاسخ‌دهی مستقیم انسانی.",
+        description="استدلال فنی، کدنویسی، رفع باگ و طراحی الگوریتم‌های پیچیده نرم‌افزاری (Groq).",
+        provider="groq",
     ),
 }
 
@@ -81,7 +85,8 @@ def format_model_status(current_profile_id: int) -> str:
     lines = [
         f"🤖 مدل فعال هوش مصنوعی این گروه: مدل {profile.id}",
         f"🏷 عنوان: {profile.name} ({profile.english_name})",
-        f"🆔 شناسه: {profile.model_id}",
+        f"🌐 سرویس‌دهنده: {profile.provider.upper()}",
+        f"🆔 شناسه مدل: {profile.model_id}",
         f"📝 توضیحات: {profile.description}",
         "",
         "📋 لیست تمام مدل‌های قابل انتخاب (فقط برای مالک سراسری):",
