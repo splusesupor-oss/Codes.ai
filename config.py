@@ -270,6 +270,29 @@ AI_RETRY_BASE_DELAY = 1.2           # ثانیه — تأخیر پایه برا�
 # مالک سراسری به‌صورت پیش‌فرض مجاز است با AI صحبت کند (قابل خاموش کردن)
 AI_OWNER_ALWAYS_ALLOWED = True
 
+# اتصال خودکار مدل Cloudflare به جستجوی زنده وب و تقویم روز تا سال ۲۰۲۶ / ۱۴۰۵
+AI_WEB_SEARCH_ENABLED = True
+
+# ارتقای خودکار شناسه‌های قدیمی/منسوخ‌شده‌ی ۲۰۲۱-۲۰۲۳ کلودفلر در فایل‌های .env قدیمی
+LEGACY_DEPRECATED_CF_MODELS = frozenset({
+    "@cf/meta/llama-2-7b-chat-int8",
+    "@cf/meta/llama-2-7b-chat-fp16",
+    "@cf/meta/llama-3-8b-instruct",
+    "@cf/mistral/mistral-7b-instruct-v0.1",
+    "@cf/google/gemma-7b-it",
+})
+
+
+def upgrade_legacy_cf_model(model_id: str | None) -> str:
+    """ارتقای خودکار مدل‌های منسوخ ۲۰۲۱ کلودفلر به مدل به‌روز بدون دست‌زدن به مدل‌های سفارشی جدید."""
+    clean = (model_id or "").strip()
+    if not clean:
+        return AI_MODEL
+    if clean in LEGACY_DEPRECATED_CF_MODELS:
+        log.info("مدل قدیمی کلودفلر (%s) خودکار به @cf/meta/llama-3.3-70b-instruct-fp8-fast ارتقا یافت.", clean)
+        return "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+    return clean
+
 MAX_MESSAGE_CHARS = 3500
 LINK_PREVIEW = False
 QUOTE_MODE = "entity"
@@ -337,6 +360,7 @@ class Config:
     ai_retry_max: int = AI_RETRY_MAX
     ai_retry_base_delay: float = AI_RETRY_BASE_DELAY
     ai_owner_always_allowed: bool = AI_OWNER_ALWAYS_ALLOWED
+    ai_web_search: bool = AI_WEB_SEARCH_ENABLED
     link_preview: bool = LINK_PREVIEW
     quote_mode: str = QUOTE_MODE
     quote_reply_fallback_to_entity: bool = QUOTE_REPLY_FALLBACK_TO_ENTITY
@@ -452,7 +476,7 @@ class Config:
             cloudflare_api_token=primary_tok,
             cloudflare_accounts=env_accounts,
             groq_api_key=_env_str("GROQ_API_KEY"),
-            ai_model=os.environ.get("ACOD_AI_MODEL", AI_MODEL),
+            ai_model=upgrade_legacy_cf_model(os.environ.get("ACOD_AI_MODEL", AI_MODEL)),
             ai_online_command=os.environ.get("ACOD_AI_ONLINE_COMMAND", AI_ONLINE_COMMAND),
             ai_of_command=os.environ.get("ACOD_AI_OF_COMMAND", AI_OF_COMMAND),
             ai_list_command=os.environ.get("ACOD_AI_LIST_COMMAND", AI_LIST_COMMAND),
@@ -467,6 +491,8 @@ class Config:
             ai_retry_max=int(os.environ.get("ACOD_AI_RETRY_MAX", AI_RETRY_MAX)),
             ai_retry_base_delay=float(os.environ.get("ACOD_AI_RETRY_BASE_DELAY", AI_RETRY_BASE_DELAY)),
             ai_owner_always_allowed=os.environ.get("ACOD_AI_OWNER_ALLOWED", "1")
+            not in ("0", "false", "False"),
+            ai_web_search=os.environ.get("ACOD_AI_WEB_SEARCH", "1")
             not in ("0", "false", "False"),
             link_preview=os.environ.get("ACOD_LINK_PREVIEW", "0") in ("1", "true", "True"),
             quote_mode=os.environ.get("ACOD_QUOTE_MODE", QUOTE_MODE),

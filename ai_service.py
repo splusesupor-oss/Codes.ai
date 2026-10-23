@@ -96,6 +96,11 @@ from ai_client import (
     GroqAI,
 )
 from config import Config
+from live_search import (
+    LiveWebSearcher,
+    build_realtime_date_context,
+    should_search_web,
+)
 from models import (
     DEFAULT_MODEL_PROFILE_ID,
     MODEL_PROFILES,
@@ -373,6 +378,7 @@ class GroupAI:
         groq_client: Optional[GroqAI] = None,
         *,
         now_provider=None,
+        live_searcher: Optional[LiveWebSearcher] = None,
     ):
         self.cfg = cfg
         self.store = store
@@ -403,6 +409,8 @@ class GroupAI:
         self._retry_max = int(getattr(cfg, "ai_retry_max", 3))
         self._retry_base_delay = float(getattr(cfg, "ai_retry_base_delay", 1.2))
         self._fallback_pool: Optional[AccountPool] = None
+        self._explicit_live_searcher = live_searcher is not None
+        self.live_searcher: LiveWebSearcher = live_searcher or LiveWebSearcher()
         # تاریخچه مجزا به ازای هر کاربر در هر گروه: key = (chat_id, user_id)
         self._history: "OrderedDict[tuple[int, int], deque]" = OrderedDict()
         # زمان آخرین فعالیت برای تایم‌اوت ۵۰ دقیقه‌ای حافظه: key = (chat_id, user_id) -> timestamp
@@ -432,6 +440,48 @@ class GroupAI:
                 self.cfg, store=self.store, now_provider=self._now
             )
         return self._fallback_pool
+
+    def _should_use_live_grounding(self) -> bool:
+        """بررسی فعال بودن تزریق تقویم زنده ۲۰۲۶/۱۴۰۵ و جستجوی وب زنده (بدون تماس شبکه در تست‌های آفلاین)."""
+        if self._explicit_live_searcher:
+            return True
+        if not bool(getattr(self.cfg, "ai_web_search", True)):
+            return False
+        if self.fake_test_mode:
+            return False
+        if getattr(self.ai, "_external_session", None) is not None:
+            return False
+        return True
+
+    async def _enrich_messages_with_2026_data(
+        self, messages: list[dict], user_text: str
+    ) -> list[dict]:
+        """تزریق تاریخ دقیق فعلی (۲۰۲۶ / ۱۴۰۵) و نتایج جستجوی زنده وب به پیام سیستم مدل."""
+        if not messages or not self._should_use_live_grounding():
+            return messages
+
+        now_dt = self._now(TEHRAN_TZ)
+        extra_blocks = [build_realtime_date_context(now_dt)]
+
+        if should_search_web(user_text):
+            try:
+                snippets = await self.live_searcher.search(user_text, now_dt=now_dt)
+                formatted_web = self.live_searcher.format_for_prompt(snippets)
+                if formatted_web:
+                    extra_blocks.append(formatted_web)
+                    log.info(
+                        "🌐 جستجوی زنده ۲۰۲۶ برای سوال کاربر انجام شد (%s نتیجه معتبر تزریق شد).",
+                        len(snippets),
+                    )
+            except Exception as exc:
+                log.debug("ادامه بدون جستجوی زنده وب به دلیل خطای شبکه: %s", exc)
+
+        enriched = list(messages)
+        enriched[0] = {
+            **enriched[0],
+            "content": f"{enriched[0]['content']}\n\n" + "\n\n".join(extra_blocks),
+        }
+        return enriched
 
     def _can_fallback_to_groq(self) -> bool:
         """بررسی امکان سوئیچ به Groq هنگام بروز خطا در Cloudflare (در صورت تنظیم GROQ_API_KEY)."""
@@ -1158,6 +1208,7 @@ class GroupAI:
                 target_user_info=req.target_user_info,
                 asker_info=req.asker_info,
             )
+            messages = await self._enrich_messages_with_2026_data(messages, req.text)
             active_profile = req.model_profile or get_model_profile(2)
             # در صورتی که تست کلاینت سفارشی با مدل خاص تزریق کرده باشد (مانند تست test_17h با glm-4.7-flash)
             if not self.store.has_group_model(req.chat_id) and getattr(self.ai, "model", None) and self.ai.model not in ("@cf/meta/llama-3.1-8b-instruct-fp8-fast", "@cf/meta/llama-3.3-70b-instruct-fp8-fast"):
