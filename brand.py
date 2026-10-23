@@ -842,3 +842,41 @@ def build_filter_list_message(words: list[str]) -> tuple[str, list[object]]:
 
     return full_text, entities
 
+
+def format_cf_accounts_report(accounts_summary: list[dict]) -> str:
+    """قالب نمایش امن وضعیت حساب‌های Cloudflare برای دستور `ai accounts` (بدون چاپ توکن خام)."""
+    if not accounts_summary:
+        return "☁️ هیچ حساب Cloudflare در تنظیمات یا پایگاه‌داده ثبت نشده است."
+
+    status_icons = {
+        "active": "🟢 active",
+        "exhausted_today": "🔴 exhausted_today",
+        "disabled": "⚪ disabled",
+    }
+    lines = [
+        f"☁️ وضعیت حساب‌های Cloudflare Workers AI (تعداد کل: {len(accounts_summary)})",
+        "⏰ زمان ریست خودکار سهمیه: 00:00 UTC",
+        "",
+    ]
+    for item in accounts_summary:
+        idx = item.get("index", "?")
+        masked_id = item.get("account_masked") or "—"
+        st = str(item.get("status") or "active")
+        st_label = status_icons.get(st, st)
+        reqs = int(item.get("request_count") or 0)
+        errs = int(item.get("error_count") or 0)
+        tok_fp = item.get("token_fingerprint") or "—"
+        tok_len = int(item.get("token_length") or 0)
+        last_used = item.get("last_used_at") or "—"
+
+        lines.append("━━━━━━━━━━━━━━━━━━━━")
+        lines.append(f"#{idx} | Account: {masked_id}")
+        lines.append(f"• وضعیت (Status): {st_label}")
+        lines.append(f"• توکن (SHA-256): {tok_fp} (طول: {tok_len})")
+        lines.append(f"• تعداد درخواست: {reqs} | خطا: {errs}")
+        lines.append(f"• آخرین استفاده: {last_used}")
+
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
+    return "\n".join(lines)
+
+

@@ -142,6 +142,18 @@ def is_ai_single_command(text: str) -> bool:
     return normalize_text(text) == "ai"
 
 
+def is_ai_accounts_command(text: str) -> bool:
+    if not text:
+        return False
+    return normalize_text(text) == "ai accounts"
+
+
+def is_ai_accounts_reset_command(text: str) -> bool:
+    if not text:
+        return False
+    return normalize_text(text) == "ai accounts reset"
+
+
 def owner_command_variants(cfg: Config) -> set:
     commands = (cfg.owner_command,) + tuple(cfg.owner_command_aliases)
     variants = set()
@@ -338,6 +350,8 @@ class BotCore:
                 or is_help_command(norm_text)
                 or is_plun_command(norm_text)
                 or is_ai_single_command(norm_text)
+                or is_ai_accounts_command(norm_text)
+                or is_ai_accounts_reset_command(norm_text)
                 or is_tery_ai_command(norm_text)
                 or is_expiration_list_command(norm_text)
                 or is_filter_cmd
@@ -506,6 +520,15 @@ class BotCore:
                 await self._peer_of(event),
                 brand.AI_CALL_RESPONSE,
                 reply_to_msg_id=getattr(event, "id", None),
+            )
+            return
+
+        # دستورات مدیریت حساب‌های Cloudflare منحصراً در PV مالک سراسری مجازند (نادیده‌گیری در گروه)
+        if is_ai_accounts_command(norm_text) or is_ai_accounts_reset_command(norm_text):
+            log.info(
+                "دستور مدیریت حساب‌های Cloudflare خارج از PV نادیده گرفته شد (chat=%s, sender=%s).",
+                chat_id,
+                sender_id,
             )
             return
 
@@ -1154,6 +1177,14 @@ class BotCore:
                 await self._handle_expiration_list(client, event)
                 return
 
+            if is_ai_accounts_reset_command(norm_text):
+                await self._handle_pv_ai_accounts_reset(client, event)
+                return
+
+            if is_ai_accounts_command(norm_text):
+                await self._handle_pv_ai_accounts(client, event)
+                return
+
             if self.store.is_active(current_time):
                 command = match_pv_admin_command(text, self.cfg)
                 if command == "count":
@@ -1240,6 +1271,55 @@ class BotCore:
             client, await self._peer_of(event), chunks
         ):
             self._log_report(report)
+
+    async def _handle_pv_ai_accounts(self, client, event) -> None:
+        """نمایش امن وضعیت همه‌ی حساب‌های Cloudflare در PV مالک سراسری (بدون افشای توکن)."""
+        from ai_client import AccountPool, _scrub
+
+        pool = self.ai.account_pool if self.ai else AccountPool.from_config(
+            self.cfg, store=self.store, now_provider=self._now
+        )
+        if not pool.configured and self.store.list_cf_accounts():
+            pool = AccountPool(store=self.store, now_provider=self._now)
+
+        summary = pool.summary()
+        report_text = _scrub(brand.format_cf_accounts_report(summary), *pool.all_secrets())
+        log.info("دستور «ai accounts» توسط مالک سراسری در PV اجرا شد (تعداد حساب‌ها: %s).", len(summary))
+        for chunk in chunk_lines(report_text.split("\n"), self.cfg.max_message_chars):
+            self._log_report(
+                await self.sender.send_styled(
+                    client,
+                    await self._peer_of(event),
+                    chunk,
+                    reply_to_msg_id=getattr(event, "id", None),
+                    quote=False,
+                )
+            )
+
+    async def _handle_pv_ai_accounts_reset(self, client, event) -> None:
+        """ریست دستی وضعیت `exhausted_today` حساب‌های Cloudflare در PV مالک سراسری."""
+        from ai_client import AccountPool
+
+        pool = self.ai.account_pool if self.ai else AccountPool.from_config(
+            self.cfg, store=self.store, now_provider=self._now
+        )
+        mem_reset = pool.reset_exhausted()
+        db_reset = self.store.reset_all_exhausted_cf_accounts()
+        reset_total = max(mem_reset, db_reset)
+        msg = (
+            f"🔄 وضعیت سهمیه‌ی حساب‌های Cloudflare ریست شد "
+            f"(تعداد حساب بازگشته به active: {reset_total})."
+        )
+        log.info("دستور «ai accounts reset» توسط مالک سراسری در PV اجرا شد (reset=%s).", reset_total)
+        self._log_report(
+            await self.sender.send_styled(
+                client,
+                await self._peer_of(event),
+                msg,
+                reply_to_msg_id=getattr(event, "id", None),
+                quote=False,
+            )
+        )
 
     # ------------------------------------------------------------ دستور ai cod
     async def _handle_owner_command(self, client, event) -> None:

@@ -87,7 +87,14 @@ def classify_query_intent(user_text: str) -> int:
     return 2
 
 import brand
-from ai_client import AIConfigError, AIError, AIQuotaExceeded, CloudflareAI, GroqAI
+from ai_client import (
+    AIConfigError,
+    AIError,
+    AIQuotaExceeded,
+    AccountPool,
+    CloudflareAI,
+    GroqAI,
+)
 from config import Config
 from models import (
     DEFAULT_MODEL_PROFILE_ID,
@@ -370,15 +377,22 @@ class GroupAI:
         self.cfg = cfg
         self.store = store
         self.sender = sender
-        self.ai = ai_client or CloudflareAI(
-            cfg.cloudflare_account_id,
-            cfg.cloudflare_api_token,
-            cfg.ai_model,
-            timeout=cfg.ai_timeout,
-            max_output_tokens=cfg.ai_max_output_tokens,
-        )
+        self._now = now_provider or _dt.datetime.now
+        if ai_client is not None:
+            self.ai = ai_client
+            client_pool = getattr(ai_client, "pool", None)
+            if client_pool is not None and now_provider is not None and not getattr(client_pool, "_custom_clock", False):
+                client_pool._now_provider = self._now
+        else:
+            self.ai = CloudflareAI.from_config(
+                cfg,
+                store=store,
+                now_provider=self._now,
+            )
+        self._explicit_groq_client = groq_client is not None
         if groq_client is not None:
             self.groq = groq_client
+            self.fake_test_mode = False
         elif hasattr(ai_client, "calls"):
             # اگر در محیط تست یک شیء تست عمومی مانند FakeAI برای ai_client فرستاده شده است
             self.fake_test_mode = True
@@ -388,7 +402,7 @@ class GroupAI:
             self.groq = GroqAI(getattr(cfg, "groq_api_key", None))
         self._retry_max = int(getattr(cfg, "ai_retry_max", 3))
         self._retry_base_delay = float(getattr(cfg, "ai_retry_base_delay", 1.2))
-        self._now = now_provider or _dt.datetime.now
+        self._fallback_pool: Optional[AccountPool] = None
         # تاریخچه مجزا به ازای هر کاربر در هر گروه: key = (chat_id, user_id)
         self._history: "OrderedDict[tuple[int, int], deque]" = OrderedDict()
         # زمان آخرین فعالیت برای تایم‌اوت ۵۰ دقیقه‌ای حافظه: key = (chat_id, user_id) -> timestamp
@@ -406,6 +420,27 @@ class GroupAI:
         self.total_tokens_used: dict[str, int] = {"prompt": 0, "completion": 0, "total": 0}
         # آمار مصرف روزانه بر اساس تقویم UTC (همگام با چرخه ریست روزانه Workers AI)
         self._daily_usage: dict[str, dict[str, dict[str, int]]] = {}
+
+    @property
+    def account_pool(self) -> AccountPool:
+        """دسترسی یکپارچه به استخر حساب‌های Cloudflare (چه از روی کلاینت واقعی و چه از پایگاه‌داده)."""
+        client_pool = getattr(self.ai, "pool", None)
+        if isinstance(client_pool, AccountPool):
+            return client_pool
+        if self._fallback_pool is None:
+            self._fallback_pool = AccountPool.from_config(
+                self.cfg, store=self.store, now_provider=self._now
+            )
+        return self._fallback_pool
+
+    def _can_fallback_to_groq(self) -> bool:
+        """بررسی امکان سوئیچ به Groq هنگام بروز خطا در Cloudflare (در صورت تنظیم GROQ_API_KEY)."""
+        if self.groq is None or self.groq is self.ai:
+            return False
+        if not (self._explicit_groq_client or bool(getattr(self.cfg, "groq_api_key", None))):
+            return False
+        is_avail = getattr(self.groq, "is_available", None)
+        return bool(is_avail() if callable(is_avail) else getattr(self.groq, "configured", False))
 
     # ------------------------------------------------------------------ کمکی‌ها
     def get_history(self, chat_id: int, user_id: int) -> list[dict]:
@@ -1033,6 +1068,11 @@ class GroupAI:
                 return
             text = clean_ai_query(text)
 
+        # بررسی شروع روز جدید UTC برای باز کردن خودکار سهمیه حساب‌ها پیش از بررسی سهمیه گروه
+        client_pool = getattr(self.ai, "pool", None)
+        if isinstance(client_pool, AccountPool):
+            client_pool.refresh_utc_day()
+
         # بررسی سهمیه روزانه گروه
         day = self._day()
         limit = self.store.get_daily_quota(self.cfg.ai_daily_quota, chat_id=chat_id)
@@ -1129,9 +1169,10 @@ class GroupAI:
                 max_tokens_override = active_profile.max_output_tokens
                 provider = getattr(active_profile, "provider", "cloudflare")
 
-            # تفکیک قطعی و بدون تداخل سرویس‌دهنده‌ها:
-            # - مدل ۱ و ۳: منحصراً Groq API (بدون هیچ‌گونه fallback به Cloudflare تحت هیچ شرایطی)
-            # - مدل ۲: منحصراً Cloudflare Workers AI
+            # مسیریابی سرویس‌دهنده‌ها:
+            # - مدل ۱ و ۳: منحصراً Groq API (بدون fallback به Cloudflare)
+            # - مدل ۲: ابتدا Cloudflare Workers AI (با چرخش AccountPool)؛ و در صورت بروز خطا
+            #   یا اتمام همه‌ی حساب‌های Cloudflare، اگر GROQ_API_KEY تنظیم شده باشد سوئیچ خودکار به Groq
             if provider == "groq":
                 is_avail = getattr(self.groq, "is_available", None)
                 avail = is_avail() if callable(is_avail) else getattr(self.groq, "configured", False)
@@ -1143,14 +1184,30 @@ class GroupAI:
                     max_tokens=max_tokens_override,
                 )
             else:
-                # مدل ۲: منحصراً Cloudflare Workers AI بدون هیچ‌گونه فراخوانی به Groq
-                response = await self.ai.chat(
-                    messages,
-                    model=model_override,
-                    max_tokens=max_tokens_override,
-                    max_retries=self._retry_max,
-                    base_delay=self._retry_base_delay,
-                )
+                try:
+                    response = await self.ai.chat(
+                        messages,
+                        model=model_override,
+                        max_tokens=max_tokens_override,
+                        max_retries=self._retry_max,
+                        base_delay=self._retry_base_delay,
+                    )
+                except (AIQuotaExceeded, AIError, AIConfigError) as cf_exc:
+                    if not self._can_fallback_to_groq():
+                        raise
+                    fallback_pid = 3 if classify_query_intent(req.text) == 3 else 1
+                    fallback_profile = MODEL_PROFILES[fallback_pid]
+                    model_override = fallback_profile.model_id
+                    log.warning(
+                        "⚠️ خطا در سرویس Cloudflare (%s)؛ سوئیچ خودکار به Groq با مدل %s",
+                        type(cf_exc).__name__,
+                        model_override,
+                    )
+                    response = await self.groq.chat(
+                        messages,
+                        model=model_override,
+                        max_tokens=fallback_profile.max_output_tokens,
+                    )
 
             # ثبت و اندازه‌گیری واقعی مصرف توکن ورودی و خروجی از روی گزارش API مدل (بدون تخمین عددی خام)
             if response.usage:

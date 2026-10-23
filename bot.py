@@ -62,20 +62,20 @@ async def run(cfg: Config) -> None:
     store = OwnerStore(cfg.db_path)
     sender = BrandSender(cfg)
 
-    # هوش مصنوعی گروه‌ها (Cloudflare Workers AI) — بدون Token داخل کد، فقط از .env
-    ai_client = CloudflareAI(
-        cfg.cloudflare_account_id,
-        cfg.cloudflare_api_token,
-        cfg.ai_model,
-        timeout=cfg.ai_timeout,
-        max_output_tokens=cfg.ai_max_output_tokens,
-    )
+    # هوش مصنوعی گروه‌ها (Cloudflare Workers AI) — پشتیبانی از تک‌حساب و چرخش چند حساب از .env
+    ai_client = CloudflareAI.from_config(cfg, store=store)
     if ai_client.configured:
-        log.info("هوش مصنوعی آماده است (مدل: %s | سهمیه روزانه هر گروه: %s)",
-                 cfg.ai_model, cfg.ai_daily_quota)
+        log.info(
+            "هوش مصنوعی آماده است (مدل: %s | تعداد حساب‌های Cloudflare: %s | سهمیه روزانه هر گروه: %s)",
+            cfg.ai_model,
+            len(ai_client.pool.accounts),
+            cfg.ai_daily_quota,
+        )
     else:
-        log.warning("CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_API_TOKEN تنظیم نشده است؛ "
-                    "دستورهای AI کار می‌کنند ولی پاسخ مدل ارسال نمی‌شود. (فایل .env)")
+        log.warning(
+            "حساب Cloudflare تنظیم نشده است (CF_ACCOUNT_1_ID / CLOUDFLARE_ACCOUNTS_JSON / "
+            "CLOUDFLARE_ACCOUNT_ID)؛ دستورهای AI کار می‌کنند ولی پاسخ مدل ارسال نمی‌شود. (فایل .env)"
+        )
 
     core = BotCore(cfg, store, sender, ai=GroupAI(cfg, store, sender, ai_client))
 

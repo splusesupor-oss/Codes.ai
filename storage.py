@@ -119,7 +119,43 @@ CREATE TABLE IF NOT EXISTS group_filtered_words (
     added_at   TEXT NOT NULL,
     PRIMARY KEY (chat_id, word)
 );
+
+-- حساب‌های Cloudflare Workers AI برای چرخش خودکار سهمیه روزانه
+CREATE TABLE IF NOT EXISTS cf_accounts (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id    TEXT NOT NULL UNIQUE,
+    api_token     TEXT NOT NULL,
+    status        TEXT NOT NULL DEFAULT 'active',  -- active|exhausted_today|disabled
+    exhausted_day TEXT,           -- تاریخ UTC آخرین اتمام سهمیه
+    request_count INTEGER NOT NULL DEFAULT 0,
+    error_count   INTEGER NOT NULL DEFAULT 0,
+    last_used_at  TEXT
+);
 """
+
+
+@dataclass(frozen=True)
+class CfAccountRecord:
+    """یک حساب ذخیره‌شده‌ی Cloudflare در پایگاه‌داده (با نمایش امن و بدون افشای توکن)."""
+
+    id: int
+    account_id: str
+    api_token: str
+    status: str
+    exhausted_day: Optional[str]
+    request_count: int
+    error_count: int
+    last_used_at: Optional[str]
+
+    def __repr__(self) -> str:
+        from config import mask_account_id, token_fingerprint
+
+        return (
+            f"CfAccountRecord(id={self.id}, account_id='{mask_account_id(self.account_id)}', "
+            f"status='{self.status}', exhausted_day={self.exhausted_day!r}, "
+            f"request_count={self.request_count}, error_count={self.error_count}, "
+            f"token_sha256='{token_fingerprint(self.api_token)}')"
+        )
 
 
 @dataclass(frozen=True)
@@ -938,13 +974,188 @@ class OwnerStore:
                 raise
 
     def ai_exhaust_quota(self, chat_id: int, day: str, limit: int) -> None:
+        chat_id, limit = int(chat_id), int(limit)
+        lock_key = f"upstream_quota_lock:{chat_id}:{day}"
         with self._lock:
+            existing_lock = self._conn.execute(
+                "SELECT value FROM bot_settings WHERE key = ?", (lock_key,)
+            ).fetchone()
+            if existing_lock is None:
+                real_used = self.ai_used_quota(chat_id, day)
+                if real_used < limit:
+                    self._conn.execute(
+                        "INSERT INTO bot_settings (key, value) VALUES (?, ?)",
+                        (lock_key, str(real_used)),
+                    )
             self._conn.execute(
                 """INSERT INTO ai_usage (chat_id, day, requests) VALUES (?, ?, ?)
                    ON CONFLICT(chat_id, day) DO UPDATE SET requests = ?""",
-                (int(chat_id), day, int(limit), int(limit)),
+                (chat_id, day, limit, limit),
             )
             self._conn.commit()
+
+    def restore_upstream_quota_locks(self) -> int:
+        """آزادسازی قفل‌های سهمیه بالادستی پس از ریست UTC یا دستور ai accounts reset."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT key, value FROM bot_settings WHERE key LIKE 'upstream_quota_lock:%'"
+            ).fetchall()
+            restored = 0
+            for r in rows:
+                parts = str(r["key"]).split(":", 2)
+                if len(parts) == 3:
+                    try:
+                        c_id = int(parts[1])
+                        d_str = parts[2]
+                        prev_used = int(r["value"])
+                        self._conn.execute(
+                            "UPDATE ai_usage SET requests = ? WHERE chat_id = ? AND day = ?",
+                            (prev_used, c_id, d_str),
+                        )
+                        restored += 1
+                    except ValueError:
+                        pass
+                self._conn.execute("DELETE FROM bot_settings WHERE key = ?", (r["key"],))
+            if rows:
+                self._conn.commit()
+            return restored
+
+    # ------------------------------------------------- استخر حساب‌های Cloudflare (cf_accounts)
+    @staticmethod
+    def _row_to_cf_account(row) -> Optional[CfAccountRecord]:
+        if row is None:
+            return None
+        return CfAccountRecord(
+            id=int(row["id"]),
+            account_id=str(row["account_id"]),
+            api_token=str(row["api_token"]),
+            status=str(row["status"]),
+            exhausted_day=row["exhausted_day"],
+            request_count=int(row["request_count"] or 0),
+            error_count=int(row["error_count"] or 0),
+            last_used_at=row["last_used_at"],
+        )
+
+    def sync_cf_accounts(self, accounts) -> list[CfAccountRecord]:
+        """همگام‌سازی حساب‌های `.env` با جدول `cf_accounts` (افزودن حساب‌های جدید بدون حذف قبلی‌ها)."""
+        from config import normalize_cf_accounts
+
+        normalized = normalize_cf_accounts(accounts)
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                for cred in normalized:
+                    self._conn.execute(
+                        """INSERT INTO cf_accounts (account_id, api_token, status)
+                           VALUES (?, ?, 'active')
+                           ON CONFLICT(account_id) DO UPDATE SET
+                               api_token = excluded.api_token""",
+                        (cred.account_id, cred.api_token),
+                    )
+                self._conn.execute("COMMIT")
+            except Exception:
+                try:
+                    self._conn.execute("ROLLBACK")
+                except sqlite3.Error:
+                    pass
+                raise
+        return self.list_cf_accounts()
+
+    def list_cf_accounts(self) -> list[CfAccountRecord]:
+        """دریافت همه‌ی حساب‌های ذخیره‌شده به ترتیب ثبت (`id ASC`)."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM cf_accounts ORDER BY id ASC"
+            ).fetchall()
+        return [self._row_to_cf_account(r) for r in rows if r is not None]
+
+    def get_cf_account(self, account_id: str) -> Optional[CfAccountRecord]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM cf_accounts WHERE account_id = ?",
+                (str(account_id).strip(),),
+            ).fetchone()
+        return self._row_to_cf_account(row)
+
+    def record_cf_account_request(
+        self, account_id: str, used_at: Optional[str] = None
+    ) -> None:
+        """ثبت یک درخواست روی حساب و به‌روزرسانی آخرین زمان استفاده."""
+        ts = used_at or _now()
+        with self._lock:
+            self._conn.execute(
+                """UPDATE cf_accounts
+                   SET request_count = request_count + 1,
+                       last_used_at = ?
+                   WHERE account_id = ?""",
+                (ts, str(account_id).strip()),
+            )
+            self._conn.commit()
+
+    def record_cf_account_error(self, account_id: str) -> None:
+        """افزایش شمارنده‌ی خطای یک حساب."""
+        with self._lock:
+            self._conn.execute(
+                "UPDATE cf_accounts SET error_count = error_count + 1 WHERE account_id = ?",
+                (str(account_id).strip(),),
+            )
+            self._conn.commit()
+
+    def mark_cf_account_exhausted(self, account_id: str, utc_day_str: str) -> None:
+        """علامت‌گذاری حساب به‌عنوان `exhausted_today` به همراه تاریخ UTC اتمام سهمیه."""
+        with self._lock:
+            self._conn.execute(
+                """UPDATE cf_accounts
+                   SET status = 'exhausted_today',
+                       exhausted_day = ?
+                   WHERE account_id = ?""",
+                (str(utc_day_str), str(account_id).strip()),
+            )
+            self._conn.commit()
+
+    def set_cf_account_status(
+        self, account_id: str, status: str, exhausted_day: Optional[str] = None
+    ) -> None:
+        """تغییر وضعیت یک حساب (`active` | `exhausted_today` | `disabled`)."""
+        if status not in ("active", "exhausted_today", "disabled"):
+            raise ValueError(f"وضعیت نامعتبر حساب Cloudflare: {status}")
+        with self._lock:
+            self._conn.execute(
+                "UPDATE cf_accounts SET status = ?, exhausted_day = ? WHERE account_id = ?",
+                (status, exhausted_day, str(account_id).strip()),
+            )
+            self._conn.commit()
+
+    def reset_cf_accounts_if_new_utc_day(self, current_utc_day: str) -> int:
+        """در شروع روز جدید UTC، حساب‌های `exhausted_today` روز قبل را به `active` برمی‌گرداند."""
+        with self._lock:
+            cur = self._conn.execute(
+                """UPDATE cf_accounts
+                   SET status = 'active',
+                       exhausted_day = NULL
+                   WHERE status = 'exhausted_today'
+                     AND (exhausted_day IS NULL OR exhausted_day != ?)""",
+                (str(current_utc_day),),
+            )
+            count = cur.rowcount
+            self._conn.commit()
+        if count > 0:
+            self.restore_upstream_quota_locks()
+        return count
+
+    def reset_all_exhausted_cf_accounts(self) -> int:
+        """ریست دستی وضعیت همه‌ی حساب‌های `exhausted_today` (دستور `ai accounts reset`)."""
+        with self._lock:
+            cur = self._conn.execute(
+                """UPDATE cf_accounts
+                   SET status = 'active',
+                       exhausted_day = NULL
+                   WHERE status = 'exhausted_today'"""
+            )
+            count = cur.rowcount
+            self._conn.commit()
+        self.restore_upstream_quota_locks()
+        return count
 
     def attempts(self) -> list[dict]:
         with self._lock:
