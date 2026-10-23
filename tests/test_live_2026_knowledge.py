@@ -150,9 +150,15 @@ class TestLive2026Knowledge(unittest.TestCase):
         self.assertFalse(should_search_web("سلام"))
         self.assertFalse(should_search_web("دمت گرم"))
         self.assertFalse(should_search_web("امروز چندمه؟"))  # بلوک زمان سیستم کافی است
+        self.assertFalse(should_search_web("آخرین بروزرسانی اطلاعاتت مال چه سالیه"))
         self.assertTrue(should_search_web("قهرمان جام جهانی ۲۰۲۶ کی شد؟"))
-        self.assertTrue(should_search_web("رئیس جمهور فعلی ایران الان کیه؟"))
+        self.assertTrue(should_search_web("رئیس جمهور امریکا رو بگو"))  # بدون علامت سوال در موبایل
         self.assertEqual(clean_search_query("میشه بگی رئیس جمهور فعلی ایران الان کیه؟"), "رئیس جمهور ایران")
+
+        # گارد ضدتوهم سال ۲۰۲۱ در خروجی مدل
+        fixed = brand.clean_model_output("آخرین بروزرسانی من مربوط به سپتامبر ۲۰۲۱ است.")
+        self.assertIn("۲۰۲۶", fixed)
+        self.assertNotIn("۲۰۲۱", fixed)
 
     def test_legacy_2021_cloudflare_models_auto_upgrade(self):
         """مدل‌های منسوخ ۲۰۲۱ کلودفلر خودکار ارتقا می‌یابند ولی مدل‌های سفارشی جدید حفظ می‌شوند."""
