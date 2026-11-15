@@ -395,16 +395,22 @@ class TestMultiGroupAndModels(unittest.TestCase):
     # ۱۷) محاسبه دقیق انقضا از زمان فعال‌سازی و خاموشی خودکار پس از موعد
     # -----------------------------------------------------------------------
     def test_fourteen_day_group_expiration_calculation_and_auto_shutdown(self):
-        """دستور ۱۴ day باید از تاریخ فعال‌سازی محاسبه کرده و پس از سررسید خاموش شود."""
-        # فعال‌سازی اولیه در زمان مشخص
-        act_time = _dt.datetime(2026, 10, 1, 10, 30, 0, tzinfo=_dt.timezone.utc)
+        """دستور «۱۴ day» باید از «اکنون» محاسبه شود و پس از سررسید خودکار خاموش شود.
+
+        نکته‌ی رگرسیون: پیش‌تر پایه‌ی محاسبه `activated_at` بود؛ پس اگر گروه مدتی
+        قبل فعال شده بود، «14 day» تاریخی در گذشته تولید می‌کرد و گروه بی‌درنگ
+        منقضی می‌ماند (باگ «ربات در گروه روشن نمی‌شود / اعتبار تمام شده»).
+        """
+        # گروه مدتی قبل فعال شده است (تاریخ فعال‌سازی در گذشته)
+        act_time = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=45)
         self.store.activate_group(GROUP_1, OWNER, group_name="گروه پایتون پیشرفته")
-        # تنظیم زمان فعال‌سازی قدیمی‌تر
         self.store._conn.execute(
             "UPDATE group_registry SET activated_at = ? WHERE chat_id = ?",
             (act_time.isoformat(), GROUP_1),
         )
         self.store._conn.commit()
+
+        before_cmd = _dt.datetime.now(_dt.timezone.utc)
 
         # ارسال دستور ۱۴ day
         ev = FakeEvent("14 day", user_id=OWNER, chat_id=GROUP_1, is_group=True)
@@ -416,19 +422,22 @@ class TestMultiGroupAndModels(unittest.TestCase):
         self.assertIn("𝗔𝗰𝘁𝗶𝘃𝗮𝘁𝗶𝗼𝗻 𝗗𝗮𝘁𝗲⏱", resp)
         self.assertIn("𝗘𝘅𝗽𝗶𝗿𝗮𝘁𝗶𝗼𝗻 𝗱𝗮𝘁𝗲⏱", resp)
 
-        # تاریخ انقضا باید دقیقاً برابر با act_time + 14 days باشد
+        # تاریخ انقضا باید «از همین حالا» + ۱۴ روز باشد، نه از تاریخ فعال‌سازی قدیمی
         exp_dt = self.store.get_group_expiration(GROUP_1)
-        expected_exp = act_time + _dt.timedelta(days=14)
         self.assertIsNotNone(exp_dt)
-        self.assertEqual(exp_dt.day, expected_exp.day)
+        expected_exp = before_cmd + _dt.timedelta(days=14)
+        self.assertLessEqual(abs((exp_dt - expected_exp).total_seconds()), 120)
 
-        # قبل از سررسید (مثلاً روز دهم) گروه منقضی نیست
-        day10 = act_time + _dt.timedelta(days=10)
+        # بعد از این تمدید، گروه نباید منقضی باشد
+        self.assertFalse(self.store.is_group_expired(GROUP_1))
+
+        # قبل از سررسید (روز دهم پس از تمدید) گروه منقضی نیست
+        day10 = exp_dt - _dt.timedelta(days=4)
         self.assertFalse(self.store.is_group_expired(GROUP_1, now=day10))
 
-        # بعد از سررسید (مثلاً روز پانزدهم) گروه باید خودکار منقضی شود
-        day15 = act_time + _dt.timedelta(days=15)
-        self.assertTrue(self.store.is_group_expired(GROUP_1, now=day15))
+        # بعد از سررسید (یک روز پس از انقضا) گروه باید خودکار منقضی شود
+        day_after = exp_dt + _dt.timedelta(days=1)
+        self.assertTrue(self.store.is_group_expired(GROUP_1, now=day_after))
 
     # -----------------------------------------------------------------------
     # ۱۸) کادربندی شکیل لیست انقضا با نام گروه و تاریخ‌ها

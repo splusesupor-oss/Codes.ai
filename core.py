@@ -39,6 +39,25 @@ except Exception:
     # فال‌بک برای محیط‌هایی مثل Termux / Android / ویندوز که پکیج tzdata ندارند.
     # ساعت رسمی ایران (تهران) به صورت ثابت UTC+03:30 است (بدون DST).
     TEHRAN_TZ = _dt.timezone(_dt.timedelta(hours=3, minutes=30), name="Asia/Tehran")
+def _as_tehran(dt: Optional[_dt.datetime]) -> Optional[_dt.datetime]:
+    """تاریخ را با منطقه‌ی زمانی تهران هم‌تراز می‌کند (naive → Tehran، aware → تبدیل).
+
+    همه‌ی مقایسه‌های تاریخ/انقضا باید روی تاریخِ هم‌تراز انجام شود تا ترکیب
+    «naive ذخیره‌شده» با «aware خوانده‌شده» باعث خطای مقایسه یا انقضای زودهنگام نشود.
+    """
+    if dt is None:
+        return None
+    try:
+        return dt.replace(tzinfo=TEHRAN_TZ) if dt.tzinfo is None else dt.astimezone(TEHRAN_TZ)
+    except Exception:
+        return None
+
+
+def _utc_now(tz=None) -> _dt.datetime:
+    """ساعت جاری؛ پیش‌فرض UTC و «aware» (نه ساعت محلیِ ماشین و نه naive)."""
+    return _dt.datetime.now(tz or _dt.timezone.utc)
+
+
 _ZWNJ = "\u200c"
 _ARABIC_PAIRS = str.maketrans({"ي": "ی", "ك": "ک", "ۀ": "ه", "أ": "ا", "إ": "ا"})
 PERSIAN_DIGITS_TABLE = str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789")
@@ -127,6 +146,20 @@ def is_plun_command(text: str) -> bool:
     if not text:
         return False
     return normalize_text(text) == "ai plun"
+
+
+def is_expiration_clear_command(text: str) -> bool:
+    """دستور حذف کامل محدودیت زمانی (فقط مالک سراسری)."""
+    if not text:
+        return False
+    return normalize_text(text) in (
+        "حذف انقضا",
+        "حذف انقضاء",
+        "پاک کردن انقضا",
+        "بدون انقضا",
+        "clear expiry",
+        "clear expire",
+    )
 
 
 def is_expiration_list_command(text: str) -> bool:
@@ -296,7 +329,7 @@ class BotCore:
             return self._now_provider(tz) if tz else self._now_provider()
         if hasattr(self.ai, "_now") and callable(self.ai._now):
             return self.ai._now(tz) if tz else self.ai._now()
-        return _dt.datetime.now(tz) if tz else _dt.datetime.now()
+        return _dt.datetime.now(tz) if tz else _utc_now()
 
     # ------------------------------------------------------------------ entry
     async def on_new_message(self, client, event) -> None:
@@ -417,9 +450,26 @@ class BotCore:
                 if config_cmd and config_cmd[0] == "expire_days":
                     await self._handle_expire_config(client, event, config_cmd[1])
                     return
+                if is_expiration_clear_command(norm_text):
+                    await self._handle_expire_clear(client, event)
+                    return
                 if match_command(text, self.cfg) == "owner":
                     await self._handle_owner_command(client, event)
                     return
+                # به‌جای سکوت/پیام مبهم، مسیر تمدید به مالک نشان داده می‌شود.
+                hint = (
+                    brand.BOT_EXPIRED_OWNER_HINT_GROUP
+                    if group_expired
+                    else brand.BOT_EXPIRED_OWNER_HINT
+                )
+                await self.sender.send_styled(
+                    client,
+                    await self._peer_of(event),
+                    hint,
+                    reply_to_msg_id=getattr(event, "id", None),
+                    quote=False,
+                )
+                return
             if is_ai_xcod_command(norm_text) or getattr(event, "is_reply", False):
                 await self.sender.send_styled(
                     client,
@@ -459,6 +509,14 @@ class BotCore:
                     return
             else:
                 log.info("کاربر عادی %s تلاش کرد مقادیر پیکربندی را تغییر دهد؛ نادیده گرفته شد.", sender_id)
+
+        # حذف محدودیت زمانی (فقط مالک سراسری، در گروه و PV)
+        if is_expiration_clear_command(norm_text):
+            if self.store.is_owner(sender_id):
+                await self._handle_expire_clear(client, event)
+            else:
+                log.info("دستور حذف انقضا از غیرمالک سراسری %s رد شد", sender_id)
+            return
 
         # -------------------------------------------------------------
         # د) دستور «Tery ai» — ثبت مالک ربات (فقط مالک سراسری)
@@ -726,9 +784,21 @@ class BotCore:
                     chat_id, int(getattr(event, "sender_id", 0) or 0), group_name=group_name
                 )
 
-            expires_at = act_dt + _dt.timedelta(days=days)
+            # پایه‌ی محاسبه‌ی انقضا (رفع باگ «تمدید بی‌اثر»):
+            #   • اگر انقضای فعلی گروه در آینده است، از همان تاریخ تمدید می‌شود (اعتبار جمع می‌شود).
+            #   • اگر گروه منقضی شده یا انقضایی ثبت نشده، از «همین لحظه» حساب می‌شود.
+            # قبلاً پایه همیشه `activated_at` بود؛ بنابراین تمدیدِ یک گروه قدیمی همیشه تاریخی
+            # در گذشته تولید می‌کرد و گروه برای همیشه قفل می‌شد.
+            existing_group_exp = _as_tehran(self.store.get_group_expiration(chat_id))
+            base_dt = existing_group_exp if (existing_group_exp and existing_group_exp > now_dt) else now_dt
+
+            expires_at = base_dt + _dt.timedelta(days=days)
             self.store.set_group_expiration(chat_id, expires_at)
-            self.store.set_expiration(expires_at)
+
+            # اعتبار سراسری فقط طولانی‌تر می‌شود و هرگز با تمدید یک گروه کوتاه نمی‌شود.
+            current_global_exp = _as_tehran(self.store.get_expiration())
+            if current_global_exp is None or current_global_exp < expires_at:
+                self.store.set_expiration(expires_at)
 
             # تاریخ به صورت هجری شمسی (جلالی)
             act_str = brand.parse_and_format_jalali(act_dt)
@@ -749,6 +819,10 @@ class BotCore:
             log.info("انقضای گروه %s (%s) به %s روز دیگر (%s) تنظیم شد", chat_id, group_name, days, exp_str)
         else:
             expires_at = now_dt + _dt.timedelta(days=days)
+            # تمدید در PV هم اعتبار سراسری را کوتاه نمی‌کند.
+            current_global_exp = _as_tehran(self.store.get_expiration())
+            if current_global_exp is not None and current_global_exp > expires_at:
+                expires_at = current_global_exp
             self.store.set_expiration(expires_at)
             exp_str = brand.parse_and_format_jalali(expires_at)
             msg = (
@@ -763,6 +837,25 @@ class BotCore:
 
         await self.sender.send_styled(
             client, await self._peer_of(event), msg, quote=False,
+            reply_to_msg_id=getattr(event, "id", None),
+        )
+
+    async def _handle_expire_clear(self, client, event) -> None:
+        """حذف کامل محدودیت زمانی گروه/ربات توسط مالک سراسری."""
+        chat_id = int(getattr(event, "chat_id", 0) or 0)
+        is_group = bool(getattr(event, "is_group", False) or (chat_id < 0))
+
+        if is_group:
+            self.store.clear_group_expiration(chat_id)
+        self.store.clear_expiration()
+
+        msg = brand.EXPIRY_CLEARED_GROUP_TEXT if is_group else brand.EXPIRY_CLEARED_TEXT
+        log.info("محدودیت زمانی %s توسط مالک سراسری حذف شد", "گروه %s" % chat_id if is_group else "ربات")
+        await self.sender.send_styled(
+            client,
+            await self._peer_of(event),
+            msg,
+            quote=False,
             reply_to_msg_id=getattr(event, "id", None),
         )
 
@@ -1172,6 +1265,10 @@ class BotCore:
                 if cmd_type == "expire_days":
                     await self._handle_expire_config(client, event, val)
                     return
+
+            if is_expiration_clear_command(norm_text):
+                await self._handle_expire_clear(client, event)
+                return
 
             if is_expiration_list_command(norm_text):
                 await self._handle_expiration_list(client, event)

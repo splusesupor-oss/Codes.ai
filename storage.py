@@ -229,6 +229,26 @@ def _now() -> str:
     return _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
 
 
+def _align_pair(
+    now: Optional[_dt.datetime], exp: _dt.datetime
+) -> tuple[_dt.datetime, _dt.datetime]:
+    """هم‌ترازکردن «اکنون» و «انقضا» برای مقایسه‌ی ایمن.
+
+    هر ترکیبی از تاریخ naive/aware را پوشش می‌دهد؛ اگر هرکدام منطقه‌ی زمانی داشته باشد،
+    هر دو به آن منطقه منتقل می‌شوند. قبلاً ترکیب «اکنونِ aware با انقضای naive» باعث
+    `TypeError: can't compare offset-naive and offset-aware datetimes` می‌شد.
+    """
+    tz = exp.tzinfo or (now.tzinfo if now is not None else None)
+    if now is None:
+        now = _dt.datetime.now(tz or _dt.timezone.utc)
+    if tz is None:
+        now_cmp, exp_cmp = now.replace(tzinfo=None), exp.replace(tzinfo=None)
+    else:
+        now_cmp = now.replace(tzinfo=tz) if now.tzinfo is None else now.astimezone(tz)
+        exp_cmp = exp.replace(tzinfo=tz) if exp.tzinfo is None else exp.astimezone(tz)
+    return now_cmp, exp_cmp
+
+
 class OwnerStore:
     """ذخیره‌ساز اتمیک مالک سراسری و تنظیمات ربات."""
 
@@ -525,17 +545,23 @@ class OwnerStore:
         except Exception:
             return None
 
+    def clear_group_expiration(self, chat_id: int) -> None:
+        """حذف محدودیت زمانی یک گروه (گروه دیگر منقضی نمی‌شود)."""
+        chat_id = int(chat_id)
+        now_str = _now()
+        with self._lock:
+            self._conn.execute(
+                "UPDATE group_registry SET expires_at = NULL, updated_at = ? WHERE chat_id = ?",
+                (now_str, chat_id),
+            )
+            self._conn.commit()
+
     def is_group_expired(self, chat_id: int, now: Optional[_dt.datetime] = None) -> bool:
         exp = self.get_group_expiration(chat_id)
         if exp is None:
             return False
-        if now is None:
-            now = _dt.datetime.now(exp.tzinfo) if exp.tzinfo else _dt.datetime.now(_dt.timezone.utc)
-        elif exp.tzinfo is not None and now.tzinfo is None:
-            now = now.replace(tzinfo=exp.tzinfo)
-        elif exp.tzinfo is not None and now.tzinfo is not None:
-            now = now.astimezone(exp.tzinfo)
-        return now >= exp
+        now_aware, exp_aware = _align_pair(now, exp)
+        return now_aware >= exp_aware
 
     def update_group_name(self, chat_id: int, group_name: str) -> None:
         chat_id = int(chat_id)
@@ -704,16 +730,8 @@ class OwnerStore:
         exp = self.get_expiration()
         if exp is None:
             return False
-        if now is None:
-            if exp.tzinfo is not None:
-                now = _dt.datetime.now(exp.tzinfo)
-            else:
-                now = _dt.datetime.now(_dt.timezone.utc)
-        elif exp.tzinfo is not None and now.tzinfo is None:
-            now = now.replace(tzinfo=exp.tzinfo)
-        elif exp.tzinfo is not None and now.tzinfo is not None:
-            now = now.astimezone(exp.tzinfo)
-        return now >= exp
+        now_aware, exp_aware = _align_pair(now, exp)
+        return now_aware >= exp_aware
 
     # ------------------------------------------------- خاموشی کلی ربات
     _KEY_SUSPENDED = "global_suspended"

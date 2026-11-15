@@ -24,6 +24,11 @@ from typing import Any, Optional
 AI_SESSION_TIMEOUT_SECONDS = 50 * 60  # ۵۰ دقیقه مهلت حافظه گفت‌وگو و لاگ پیام‌های گروه
 
 
+def _utc_now(tz=None) -> _dt.datetime:
+    """ساعت جاری؛ پیش‌فرض UTC و aware."""
+    return _dt.datetime.now(tz or _dt.timezone.utc)
+
+
 def _to_timestamp(dt_val) -> float:
     if isinstance(dt_val, (int, float)):
         return float(dt_val)
@@ -383,7 +388,9 @@ class GroupAI:
         self.cfg = cfg
         self.store = store
         self.sender = sender
-        self._now = now_provider or _dt.datetime.now
+        # ساعت پیش‌فرض: UTC و aware (نه ساعت محلیِ ماشین و نه naive).
+        # naive-local روی سرورهای UTC باعث انقضای ۳:۳۰ زودهنگام و مقایسه‌های ناسازگار می‌شد.
+        self._now = now_provider or _utc_now
         if ai_client is not None:
             self.ai = ai_client
             client_pool = getattr(ai_client, "pool", None)
