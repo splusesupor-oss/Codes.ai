@@ -15,7 +15,7 @@ import brand
 from config import Config
 from core import BotCore
 import pv_messages as ui
-from pv_rules import allowed_text, is_attached_photo, media_of
+from pv_rules import allowed_text, is_attached_photo, media_of, option_number
 from pv_store import Input, Order, WINDOW
 from storage import OwnerStore
 from tests.fakes import FakeClient, FakeEvent
@@ -83,6 +83,12 @@ class ReferenceAndRules(unittest.TestCase):
         self.assertTrue(is_attached_photo(media_of(Event())))
         self.assertTrue(is_attached_photo(document('image/jpeg')))
         self.assertTrue(is_attached_photo(document('image/png')))
+
+    def test_single_visible_digit_from_rtl_keyboards_not_numbers_in_prose(self):
+        for raw in ('4', '۴', '٤', ' \u200f۴\u200e ', '\u2067٤\u2069', '4️⃣'):
+            with self.subTest(raw=raw): self.assertEqual(option_number(raw), 4)
+        for raw in ('۱۴', '۱\u200e۲', '4K', 'گزینه ۴', '4.0', '۰', '۹', '❌'):
+            with self.subTest(raw=raw): self.assertIsNone(option_number(raw))
 
     def test_sticker_preview_gif_video_and_arbitrary_files_are_not_photos(self):
         sticker = types.DocumentAttributeSticker(alt='🐈', stickerset=types.InputStickerSetEmpty())
@@ -192,17 +198,132 @@ class Orders(unittest.IsolatedAsyncioTestCase):
     async def test_invalid_steps_do_not_advance_and_sticker_does_not_consume_quota(self):
         for value in ('hi','6','0','1','11','4','کوتاه','یک تصویر برهنه بساز',PROMPT):
             await self.pv(value)
-        self.assertEqual(self.client.text_messages().count(INVALID), 4)
+        self.assertEqual(self.client.text_messages(), [brand.MENU_TEXT, ui.KIND.text, ui.KIND.text,
+                         ui.QUALITY.text, ui.QUALITY.text, ui.EDIT.text, INVALID, INVALID, ui.PHOTO.text])
         self.assertEqual(self.last(), ui.PHOTO.text)
         for media in (None, document('application/pdf'), types.MessageMediaWebPage(webpage=types.WebPageEmpty(1))):
             await self.pv('عکس.jpg', media=media)
-            self.assertEqual(self.last(), INVALID)
+            self.assertEqual(self.last(), ui.PHOTO.text)
         await self.pv('یک عکس مستهجن', media=types.MessageMediaPhoto())
         self.assertEqual(self.last(), INVALID)
         self.assertEqual(self.orders(), [])
         await self.pv(media=document('image/jpeg'))
         self.assertEqual(self.last(), OK)
         self.assertEqual(len(self.orders()), 1)
+
+    async def test_returning_username_less_human_uses_menu_even_with_native_rtl_message(self):
+        await self.pv('سلام', username=None)
+        await self.pv('سلام', username=None)
+        self.assertEqual(self.client.text_messages(), [brand.MENU_TEXT, brand.MENU_TEXT])
+        self.restart()
+        for text in ('سلام مجدد', 'مرسی', 'شماره ۴ کدام است؟'):
+            await self.pv(text, username=None)
+        peer = types.PeerUser(ALI)
+        raw = types.Message(id=next(self.ids), peer_id=peer, from_id=peer, out=False, message='\u200f۴\u200e')
+        await self.core.on_new_message(self.client, events.NewMessage.Event(raw))
+        self.assertEqual(self.client.text_messages(), [brand.MENU_TEXT]*3 + ['https://acod.osine2.workers.dev/'])
+        self.assertEqual(self.store.count_pv_users(), 1)
+        self.assertEqual(self.orders(), [])
+
+    async def test_greeting_is_not_a_create_order_but_greeting_plus_real_brief_is(self):
+        await self.begin()
+        for text in ('سلام وقت بخیر', 'سلام، وقت‌تون به خیر! 👋', 'درود و سلام', 'ممنون از شما',
+                     'سلام، ببخشید چطور سفارش بدم؟', 'شماره ۴ کدام است؟', 'راهنما', 'ai accounts reset', '🙏'):
+            with self.subTest(text=text):
+                await self.pv(text)
+                self.assertEqual(self.last(), ui.CREATE.text)
+                self.assertEqual(self.orders(), [])
+        for text in ('گل آبی', 'یک عکس بساز', 'سلام وقت بخیر، یک عکس بساز'):
+            await self.pv(text)
+            self.assertEqual(self.last(), INVALID)  # an attempted but too short/generic brief
+            self.assertEqual(self.orders(), [])
+        brief = 'سلام وقت بخیر، یک منوی رستوران با زمینه آبی برایم طراحی کن.'
+        await self.pv(brief)
+        self.assertEqual(self.last(), OK)
+        self.assertEqual([o['prompt'] for o in self.orders()], [brief])
+
+    async def test_incomplete_edit_keeps_prompt_and_quality_across_guidance_and_restart(self):
+        await self.begin(edit=True, quality='4️⃣')
+        await self.pv('سلام وقت بخیر')
+        self.assertEqual(self.last(), ui.EDIT.text)
+        await self.pv(PROMPT)
+        self.restart()
+        await self.pv('سلام')
+        await self.pv(media=document('application/pdf'))
+        self.assertEqual(self.client.text_messages(), [ui.PHOTO.text]*2)
+        self.assertEqual(self.orders(), [])
+        await self.pv(media=types.MessageMediaPhoto())
+        self.assertEqual(self.last(), OK)
+        self.assertEqual([(o['kind'],o['quality'],o['prompt']) for o in self.orders()], [('edit','6K',PROMPT)])
+
+    async def test_home_and_start_from_each_step_do_not_erase_orders_or_other_drafts(self):
+        await self.complete(user=BAHAR)
+        await self.begin(user=BAHAR, edit=True)
+        original = self.orders()
+        for extra, home in (((), 'منو'), (('1',), 'بازگشت'), (('2','4'), '/start'),
+                            (('1','4',PROMPT), 'منوی اصلی')):
+            await self.pv('منو')
+            await self.pv('6')
+            for text in extra: await self.pv(text)
+            await self.pv(home)
+            self.assertEqual(self.last(), brand.MENU_TEXT)
+            self.assertEqual(self.rows('SELECT step,kind,quality,prompt FROM pv_dialogs WHERE user_id=?',(ALI,)),
+                             [dict(step='menu', kind=None, quality=None, prompt=None)])
+            await self.pv('۸')
+            self.assertEqual(self.last(), ui.CHAT_TEST.text)
+        self.assertEqual(self.orders(), original)
+        self.assertEqual(self.rows('SELECT step,kind FROM pv_dialogs WHERE user_id=?',(BAHAR,)),
+                         [dict(step='prompt', kind='edit')])
+
+    async def test_legacy_pending_error_does_not_swallow_next_normal_input(self):
+        mid = await self.pv('سلام')
+        def old_error():
+            with self.store._conn:
+                self.store._conn.execute("UPDATE pv_dialogs SET due_reply='invalid' WHERE user_id=?", (ALI,))
+        old_error(); self.restart()
+        await self.pv('سلام', msg_id=mid)   # replay of a pre-upgrade message
+        self.assertEqual(self.client.text_messages(), [brand.MENU_TEXT])
+        old_error(); self.restart()
+        await self.pv('۴')                 # new valid input, not a delivery retry
+        self.assertEqual(self.client.text_messages(), ['https://acod.osine2.workers.dev/'])
+        self.assertEqual(self.orders(), [])
+
+    async def test_legacy_retry_of_actual_invalid_request_still_rejects_without_advancing(self):
+        await self.begin()
+        bad = 'یک عکس مستهجن بساز'
+        mid = await self.pv(bad)
+        with self.store._conn:
+            self.store._conn.execute("UPDATE pv_dialogs SET due_reply='invalid' WHERE user_id=?", (ALI,))
+        self.restart()
+        await self.pv(bad, msg_id=mid)
+        self.assertEqual(self.client.text_messages(), [INVALID])
+        self.assertEqual(self.orders(), [])
+        await self.pv(PROMPT)
+        self.assertEqual(self.last(), OK)
+
+    async def test_corrected_input_after_undelivered_reminder_or_rejection_works_on_first_try(self):
+        await self.pv('سلام'); await self.pv('6')
+        self.client.reject_all = True
+        await self.pv('شماره اشتباه')
+        self.restart()
+        await self.pv('2')
+        self.assertEqual(self.client.text_messages(), [ui.QUALITY.text])
+        await self.pv('۱')
+        self.client.reject_all = True
+        await self.pv('یک تصویر مستهجن بساز')
+        self.assertEqual(self.orders(), [])
+        self.restart()
+        await self.pv(PROMPT)
+        self.assertEqual(self.client.text_messages(), [OK])
+        self.assertEqual(len(self.orders()), 1)
+
+    async def test_inconsistent_old_draft_recovers_without_resetting_completed_orders(self):
+        await self.complete(); original = self.orders()
+        with self.store._conn:
+            self.store._conn.execute("UPDATE pv_dialogs SET step='prompt',kind=NULL WHERE user_id=?", (ALI,))
+        self.restart(); await self.pv('سلام')
+        self.assertEqual(self.client.text_messages(), [brand.MENU_TEXT])
+        self.assertEqual(self.orders(), original)
 
     async def test_video_is_only_a_handoff_even_if_repeated(self):
         for _ in range(8):
@@ -290,6 +411,14 @@ class Orders(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.client.text_messages(), [brand.MENU_TEXT])  # missed menu delivered first
         await self.pv('6')
         self.assertEqual(self.last(), ui.KIND.text)
+
+    async def test_undelivered_menu_destination_does_not_replace_next_valid_choice(self):
+        await self.pv('سلام')
+        self.client.reject_all = True
+        await self.pv('۳')
+        self.restart()
+        await self.pv('۴')
+        self.assertEqual(self.client.text_messages(), ['https://acod.osine2.workers.dev/'])
 
     async def test_missing_username_is_not_fabricated(self):
         for text in ('hi','6','2','1',PROMPT):

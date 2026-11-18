@@ -31,8 +31,8 @@ class PvOrders:
         self._locks = weakref.WeakValueDictionary()
         self._wake = asyncio.Event()
         # A user-session bot may have neither a bot flag nor a bot handle.
-        # Keep only fingerprints of invalid text that we actually answered.
-        self._last_invalid: OrderedDict[int, tuple[bytes, float]] = OrderedDict()
+        # Keep only fingerprints of reminders/rejections actually delivered.
+        self._last_feedback: OrderedDict[int, tuple[bytes, float]] = OrderedDict()
 
     def user_lock(self, uid):
         # Single event-loop access; unused users don't leave an unbounded lock map.
@@ -55,12 +55,13 @@ class PvOrders:
             return
         key = result.reply
         fingerprint = None
-        if key == 'invalid' and msg.is_text and msg.text.strip():
-            fingerprint = hashlib.blake2s(msg.text.strip().encode(), digest_size=12).digest()
-            previous = self._last_invalid.get(msg.user_id)
+        if result.feedback:
+            # Include the screen: suppressing an echo must never hide a different
+            # next step. Valid choices and completed orders never enter this fuse.
+            signature = f'{key}\0{type(media).__name__}\0{msg.text.strip()}'
+            fingerprint = hashlib.blake2s(signature.encode(), digest_size=12).digest()
+            previous = self._last_feedback.get(msg.user_id)
             if previous and previous[0] == fingerprint and monotonic() < previous[1]:
-                # Even a peer with no bot markers cannot ping-pong the same
-                # automatic error back to us. The current step remains usable.
                 await asyncio.to_thread(self.store.pv_replied, msg.user_id, msg.msg_id)
                 return
         if key in ('1','2','3','4','5'):
@@ -77,12 +78,12 @@ class PvOrders:
             random_id=_rpc_id(f'pv:{msg.user_id}:{msg.msg_id}:{key}'))
         if report.ok:
             if fingerprint is None:
-                self._last_invalid.pop(msg.user_id, None)
+                self._last_feedback.pop(msg.user_id, None)
             else:
-                self._last_invalid[msg.user_id] = fingerprint, monotonic() + 60
-                self._last_invalid.move_to_end(msg.user_id)
-                if len(self._last_invalid) > 2048:
-                    self._last_invalid.popitem(last=False)
+                self._last_feedback[msg.user_id] = fingerprint, monotonic() + 60
+                self._last_feedback.move_to_end(msg.user_id)
+                if len(self._last_feedback) > 2048:
+                    self._last_feedback.popitem(last=False)
             await asyncio.to_thread(self.store.pv_replied, msg.user_id, msg.msg_id)
 
     async def _owner_peer(self, client, owner_id):

@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, patch
 from splusthon import events, types
 
 import brand
+import pv_messages as ui
 from config import Config
 from core import BotCore
 from storage import OwnerStore
@@ -176,22 +177,30 @@ class SenderLoopTests(unittest.IsolatedAsyncioTestCase):
                 break
         else:
             self.fail('unbounded auto-reply loop')
-        self.assertEqual(self.client.text_messages(), [brand.MENU_TEXT, 'درخواست نامعتبر'])
+        self.assertEqual(self.client.text_messages(), [brand.MENU_TEXT, brand.MENU_TEXT])
         await self.receive(self.event('سلام', uid=OTHER))
         await self.receive(self.event(BLOCKED, uid=OTHER))
         await self.receive(self.event('1'))
-        self.assertEqual(self.client.text_messages()[-3:], [brand.MENU_TEXT, 'درخواست نامعتبر', '@osine2'])
+        self.assertEqual(self.client.text_messages()[-3:], [brand.MENU_TEXT, brand.MENU_TEXT, '@osine2'])
         await self.receive(self.event(BLOCKED))  # a valid choice reset the fuse
-        self.assertEqual(self.client.text_messages()[-1], 'درخواست نامعتبر')
+        self.assertEqual(self.client.text_messages()[-1], brand.MENU_TEXT)
+
+    async def test_repeat_notice_during_photo_steps_stops_but_next_selection_works(self):
+        for text in ('سلام', '۶', BLOCKED, BLOCKED, '۱', BLOCKED, BLOCKED, '۲'):
+            await self.receive(self.event(text))
+        self.assertEqual(self.client.text_messages(), [brand.MENU_TEXT, ui.KIND.text, ui.KIND.text,
+                         ui.QUALITY.text, ui.QUALITY.text, ui.EDIT.text])
+        self.assertEqual(self.store._conn.execute('SELECT count(*) FROM pv_orders').fetchone()[0], 0)
 
     async def test_distinct_invalid_input_and_retry_after_timeout_still_get_feedback(self):
-        await self.receive(self.event('سلام'))
+        for text in ('سلام', '۶', '۲', '۱'):
+            await self.receive(self.event(text))
         with patch('pv_orders.monotonic', return_value=10):
-            for text in ('نادرست', 'یک ورودی دیگر', 'یک ورودی دیگر'):
+            for text in ('یک تصویر مستهجن بساز', 'یک تصویر برهنه بساز', 'یک تصویر برهنه بساز'):
                 await self.receive(self.event(text))
         self.assertEqual(self.client.text_messages().count('درخواست نامعتبر'), 2)
         with patch('pv_orders.monotonic', return_value=70):
-            await self.receive(self.event('یک ورودی دیگر'))
+            await self.receive(self.event('یک تصویر برهنه بساز'))
         self.assertEqual(self.client.text_messages().count('درخواست نامعتبر'), 3)
 
     async def test_cold_lookup_does_not_reorder_same_users_pv_steps(self):

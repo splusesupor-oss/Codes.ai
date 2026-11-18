@@ -76,12 +76,12 @@ class TestFirstMessage(PvMenuTestCase):
             "1ـ سازنده\n2ـ کانال روباه\n3ـ ربات پشتیبانی\n4ـ سایت خرید هوش مصنوعی\n"
             "5ـ ربات روباه\n6ـ سفارش عکس\n7ـ سفارش ویدیو\n8_ تست چت بات هوش مصنوعی"])
 
-    def test_2_second_message_does_not_resend_intro_or_menu(self):
+    def test_2_ordinary_text_shows_menu_and_next_number_works(self):
         run(self.pv("سلام", user_id=USER_A))
         self.client.clear_requests()
         run(self.pv("ممنون", user_id=USER_A))
         run(self.pv("۱", user_id=USER_A))
-        self.assertEqual(self.texts(), ["درخواست نامعتبر", "@osine2"])
+        self.assertEqual(self.texts(), [brand.MENU_TEXT, "@osine2"])
 
     def test_3_restart_does_not_make_user_new_again(self):
         run(self.pv("سلام", user_id=USER_A, username="osine"))
@@ -98,7 +98,7 @@ class TestFirstMessage(PvMenuTestCase):
                 await core2.on_new_message(client2, event)
 
             run(scenario())
-            self.assertEqual(client2.text_messages(), ["درخواست نامعتبر"])
+            self.assertEqual(client2.text_messages(), [brand.MENU_TEXT])
             self.assertEqual(store2.count_pv_users(), 1)
         finally:
             store2.close()
@@ -110,16 +110,16 @@ class TestFirstMessage(PvMenuTestCase):
 
         # همان user_id، username متفاوت → کاربر جدید نیست
         run(self.pv("سلام", user_id=USER_A, username="osine2_new"))
-        self.assertEqual(self.texts(), ["درخواست نامعتبر"])
+        self.assertEqual(self.texts(), [brand.MENU_TEXT])
         self.assertEqual(self.store.count_pv_users(), 1)
 
-    def test_5_second_user_gets_own_menu_once(self):
+    def test_5_second_user_reopens_own_menu(self):
         run(self.pv("سلام", user_id=USER_A, username="osine"))
         run(self.pv("سلام", user_id=USER_B, username="elism", display_name="الیس"))
         self.client.clear_requests()
 
         run(self.pv("سلام", user_id=USER_B))            # پیام دوم کاربر دوم
-        self.assertEqual(self.texts(), ["درخواست نامعتبر"])
+        self.assertEqual(self.texts(), [brand.MENU_TEXT])
         self.assertEqual(self.store.count_pv_users(), 2)  # دو کاربر مستقل
 
     def test_6_restart_then_second_user_still_gets_menu_once(self):

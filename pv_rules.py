@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from enum import Enum, auto
 
 QUALITIES = ('2K', '3K', '4K', '6K')
 
@@ -13,7 +14,10 @@ _LETTERS = str.maketrans({'ي': 'ی', 'ى': 'ی', 'ك': 'ک', 'أ': 'ا', 'إ': 
 
 def option_number(text: str):
     """Exactly one digit, not a title, a decimal, a sign, or text containing a digit."""
-    value = text.strip().translate(_DIGITS)
+    # Mobile RTL keyboards and copied options can wrap a digit in directional
+    # marks or render it as a keycap. Never extract a digit from a sentence.
+    value = ''.join(c for c in text if unicodedata.category(c) != 'Cf' and c not in '\ufe0e\ufe0f')
+    value = value.strip().translate(_DIGITS).removesuffix('\u20e3')
     return int(value) if len(value) == 1 and value in '12345678' else None
 
 
@@ -47,19 +51,59 @@ _WORD = re.compile(r'[^\W\d_]+', re.UNICODE)
 _GENERIC = frozenset('یک یه لطفا لطفاً این از به من را رو برای عکس تصویر جدید ساخت بساز بکش ویرایش کن بده انجام'.split())
 
 
-def allowed_text(text: str, *, require_description: bool = True) -> bool:
-    """A short/non-description or explicit violation cannot consume quota.
+_HOME = {'منو', 'منوی اصلی', 'منو اصلی', 'شروع', 'شروع مجدد', 'از اول', 'بازگشت', 'برگشت',
+         'بازگشت به منو', 'بازگشت به منوی اصلی', 'لغو سفارش', 'لغو', 'start', 'menu'}
+# Strip only whole conversational openings, and only for the description check.
+# A brief can start with «سلام»; the rest must qualify on its own. Its original
+# spelling (including the greeting) is still used verbatim in the owner report.
+_SOCIAL_PREFIX = re.compile(
+    r'(?:سلام(?: علیکم| دوباره| مجدد)?|درود(?: بر شما)?|عرض ادب|دوست عزیز|خوبی(?:د|ن)?|'
+    r'حال(?: شما|ت|تون)? چطوره|چه خبر|خسته نباشی(?:د|ن)?|خدا ?قوت|'
+    r'(?:وقت|صبح|روز|عصر|شب)(?: ?تون| ?تان)? (?:بخیر|به خیر)|'
+    r'(?:خیلی )?(?:مرسی|ممنون(?:م)?|سپاس(?: ?گزارم)?|متشکرم|تشکر)(?: از (?:شما|لطفتون))?|'
+    r'ببخشید|hi(?: there)?|hello|thank you|thanks)(?= |$)(?: (?:و )?)?')
+_GUIDANCE = {'راهنما', 'کمک', 'راهنمایی کنید', 'لطفا راهنمایی کنید', 'چطور سفارش بدم', 'از کجا شروع کنم',
+             'چیکار کنم', 'چه کار کنم', 'چه کار باید بکنم', 'میشه کمکم کنی', 'میشه کمکم کنید',
+             'یه سوال دارم', 'یک سوال دارم', 'من یه سوال دارم', 'باشه', 'بله', 'خیر', 'نه', 'اوکی', 'ok', 'help'}
+_OPTION_QUERY = re.compile(r'(?:شماره|گزینه) [0-9]+(?: (?:کدام|کدوم) (?:است|بود))?')
 
-    The reference says «در حد 500 خط», not «حداقل 500 خط». A local minimum of
-    three different words rejects empty/trivial input without requiring padding.
-    This is not a guarantee of detecting every semantic or legal violation.
-    """
+
+def _plain_phrase(normalized_text: str) -> str:
+    return re.sub(r'[^\w]+', ' ', normalized_text).strip()
+
+
+def wants_main_menu(text: str) -> bool:
+    # A stand-alone command (including /start), never a substring of a brief.
+    return _plain_phrase(normalized(text)) in _HOME
+
+
+class TextStatus(Enum):
+    READY = auto()
+    NOT_A_BRIEF = auto()
+    INVALID = auto()
+
+
+def check_text(text: str, *, require_description: bool = True) -> TextStatus:
+    """Distinguish chat from an attempted brief that fails the displayed rules."""
     value = normalized(text)
+    if _PROHIBITED.search(_EXCLUSION.sub(' ', value)) or _AGE.search(_OBJECT_AGE.sub(' ', value)):
+        return TextStatus.INVALID
     if require_description:
-        words = set(_WORD.findall(value))
+        phrase = _plain_phrase(value)
+        pos = 0
+        while opening := _SOCIAL_PREFIX.match(phrase, pos):
+            pos = opening.end()
+        body = phrase[pos:]
+        words = set(_WORD.findall(body))
+        if not words or body in _GUIDANCE or body in _HOME or _OPTION_QUERY.fullmatch(body):
+            return TextStatus.NOT_A_BRIEF
         if len(words) < 3 or words.issubset(_GENERIC):
-            return False
-    return not (_PROHIBITED.search(_EXCLUSION.sub(' ', value)) or _AGE.search(_OBJECT_AGE.sub(' ', value)))
+            return TextStatus.INVALID
+    return TextStatus.READY
+
+
+def allowed_text(text: str, *, require_description: bool = True) -> bool:
+    return check_text(text, require_description=require_description) is TextStatus.READY
 
 
 def media_of(event):

@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass
 from typing import Optional
 from uuid import uuid4
 
-from pv_rules import QUALITIES, allowed_text, option_number
+from pv_rules import QUALITIES, TextStatus, check_text, option_number, wants_main_menu
 
 WINDOW = 13 * 60 * 60
 PHOTO_LIMIT = 4
@@ -57,6 +57,15 @@ class Input:
 class Result:
     reply: Optional[str] = None
     queued: bool = False
+    feedback: bool = False  # reminder/rejection for one input, not a required transition
+
+    @classmethod
+    def from_code(cls, code: Optional[str], queued: bool = False) -> Result:
+        if code == 'reject':
+            return cls('invalid', queued, True)
+        if code and code.startswith('hint:'):
+            return cls(code.removeprefix('hint:'), queued, True)
+        return cls(code, queued)
 
 
 @dataclass(frozen=True)
@@ -81,6 +90,22 @@ class Draft:
     kind: Optional[str] = None
     quality: Optional[str] = None
     prompt: Optional[str] = None
+
+    @classmethod
+    def restore(cls, row) -> Draft:
+        if row is None:
+            return cls()
+        draft = cls(**{k: row[k] for k in ('step', 'kind', 'quality', 'prompt')})
+        if ((draft.step in ('quality', 'prompt', 'photo') and draft.kind not in ('edit', 'create'))
+                or (draft.step in ('prompt', 'photo') and draft.quality not in QUALITIES)
+                or (draft.step == 'photo' and (draft.kind != 'edit' or not draft.prompt))):
+            return cls('reset')  # recover an inconsistent draft, never touch order records
+        return draft
+
+    def reminder(self) -> str:
+        if self.step == 'prompt':
+            return 'hint:edit' if self.kind == 'edit' else 'hint:create'
+        return 'hint:' + ('menu' if self.step == 'reset' else self.step)
 
 
 @dataclass(frozen=True)
@@ -107,17 +132,29 @@ class PvStoreMixin:
         """One transaction: dedup, transition, check combined limit, insert and enqueue."""
         with self._pv_write() as db:
             row = db.execute('SELECT * FROM pv_dialogs WHERE user_id=?', (msg.user_id,)).fetchone()
+            draft = Draft.restore(row)
+            due = row['due_reply'] if row else None
             if row and msg.msg_id <= row['last_msg_id']:
-                return Result(row['due_reply'] if msg.msg_id == row['last_msg_id'] else None)
-            draft = Draft(**{k: row[k] for k in ('step','kind','quality','prompt')}) if row else Draft()
+                if msg.msg_id < row['last_msg_id']:
+                    return Result()
+                if due == 'invalid':  # ambiguous catch-all saved by older versions
+                    due = draft.reminder()
+                    # Re-evaluate feedback only; never commit a transition on replay.
+                    _, checked = self._pv_step(db, draft, msg, now)
+                    if checked == 'reject':
+                        due = checked
+                return Result.from_code(due)
             queued = False
             if not row or draft.step == 'reset':
-                # Also applies to an existing pv_users entry on first use after migration.
                 draft, reply = Draft(), 'menu'
-            elif row['due_reply']:
-                # The previous user-facing question failed to send. Show it again
-                # rather than misinterpreting this new message as its answer.
-                reply = row['due_reply']
+            elif msg.is_text and wants_main_menu(msg.text):
+                # Reset only this draft. Orders, quota, and other users are untouched.
+                reply = 'hint:menu' if draft.step == 'menu' else 'menu'
+                draft = Draft()
+            elif due in ('menu', 'kind', 'quality', 'create', 'edit', 'photo'):
+                # Recover a missed question before interpreting a new answer. A
+                # stale error, reminder or link must never swallow a valid choice.
+                reply = due
             else:
                 draft, reply = self._pv_step(db, draft, msg, now)
                 if reply == 'success':
@@ -129,7 +166,7 @@ class PvStoreMixin:
                           quality=excluded.quality,prompt=excluded.prompt,last_msg_id=excluded.last_msg_id,
                           due_reply=excluded.due_reply''',
                        dict(asdict(draft), user_id=msg.user_id, last_msg_id=msg.msg_id, due_reply=reply))
-            return Result(reply, queued)
+            return Result.from_code(reply, queued)
 
     @staticmethod
     def _pv_step(db, draft, msg, now):
@@ -138,14 +175,17 @@ class PvStoreMixin:
                            (msg.user_id, now-WINDOW)).fetchone()[0]
             return n >= PHOTO_LIMIT
 
+        if msg.idle_command and (msg.is_text or draft.step == 'menu'):
+            if draft.step == 'menu':
+                return draft, ('help' if msg.idle_command == 'help' else None)
+            return draft, draft.reminder()  # a command is not an order description
+
         choice = option_number(msg.text) if msg.is_text else None
         if draft.step == 'menu':
-            if msg.idle_command:
-                return draft, ('help' if msg.idle_command == 'help' else None)
             if choice in (1, 2, 3, 4, 5):
                 return draft, str(choice)
             if choice == 6:
-                return (draft, 'invalid') if full() else (Draft('kind'), 'kind')
+                return (draft, 'reject') if full() else (Draft('kind'), 'kind')
             if choice == 7:
                 return Draft('reset'), 'video'  # handoff, no order and no quota use
             if choice == 8:
@@ -155,15 +195,23 @@ class PvStoreMixin:
         elif draft.step == 'quality' and choice in (1, 2, 3, 4):
             draft.step, draft.quality = 'prompt', QUALITIES[choice-1]
             return draft, draft.kind
-        elif draft.step == 'prompt' and msg.is_text and allowed_text(msg.text):
-            draft.prompt = msg.text
-            if draft.kind == 'edit':
-                draft.step = 'photo'
-                return draft, 'photo'
-            return (Draft(), 'invalid') if full() else (draft, 'success')
-        elif draft.step == 'photo' and msg.has_photo and allowed_text(msg.text, require_description=False):
-            return (Draft(), 'invalid') if full() else (draft, 'success')
-        return draft, 'invalid'
+        elif draft.step == 'prompt' and msg.is_text:
+            status = check_text(msg.text)
+            if status is TextStatus.INVALID:
+                return draft, 'reject'
+            if status is TextStatus.READY:
+                draft.prompt = msg.text
+                if draft.kind == 'edit':
+                    draft.step = 'photo'
+                    return draft, 'photo'
+                return (Draft(), 'reject') if full() else (draft, 'success')
+        elif draft.step == 'photo' and msg.has_photo:
+            if check_text(msg.text, require_description=False) is TextStatus.INVALID:
+                return draft, 'reject'
+            return (Draft(), 'reject') if full() else (draft, 'success')
+        # Ordinary chat, an out-of-range digit, or the wrong attachment is not
+        # an order description. Show the original card without losing the draft.
+        return draft, draft.reminder()
 
     @staticmethod
     def _pv_insert(db, draft, msg, now, part_limit):
