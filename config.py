@@ -300,6 +300,13 @@ QUOTE_REPLY_FALLBACK_TO_ENTITY = True
 ANNOUNCE_ON_OWNER_REPEAT = True
 
 
+def _ignored_sender_ids(value: str) -> frozenset[int]:
+    parts = [p for p in re.split(r"[,،\s]+", value.strip()) if p]
+    if any(not p.isdecimal() or int(p) <= 0 for p in parts):
+        raise ValueError("ACOD_IGNORED_SENDER_IDS: expected positive numeric user IDs")
+    return frozenset(map(int, parts))
+
+
 @dataclass(frozen=True)
 class Config:
     """تنظیمات اجرای ربات (قابل بازنویسی با متغیرهای محیطی)."""
@@ -332,6 +339,7 @@ class Config:
     ai_accounts_reset_command: str = AI_ACCOUNTS_RESET_COMMAND
     groups_only: bool = GROUPS_ONLY
     private_auto_reply: bool = PRIVATE_AUTO_REPLY
+    ignored_sender_ids: frozenset[int] = frozenset()
     pv_count_command: str = PV_COUNT_COMMAND
     pv_list_command: str = PV_LIST_COMMAND
     pv_unknown_name: str = PV_UNKNOWN_NAME
@@ -468,6 +476,7 @@ class Config:
             announce_on_owner_repeat=os.environ.get(
                 "ACOD_ANNOUNCE_ON_OWNER_REPEAT", "1" if ANNOUNCE_ON_OWNER_REPEAT else "0"
             ) not in ("0", "false", "False"),
+            ignored_sender_ids=_ignored_sender_ids(os.environ.get("ACOD_IGNORED_SENDER_IDS", "")),
             pv_count_command=os.environ.get("ACOD_PV_COUNT_COMMAND", PV_COUNT_COMMAND),
             pv_list_command=os.environ.get("ACOD_PV_LIST_COMMAND", PV_LIST_COMMAND),
             pv_unknown_name=os.environ.get("ACOD_PV_UNKNOWN_NAME", PV_UNKNOWN_NAME),

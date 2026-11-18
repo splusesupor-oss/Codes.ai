@@ -77,8 +77,6 @@ async def run(cfg: Config) -> None:
             "CLOUDFLARE_ACCOUNT_ID)؛ دستورهای AI کار می‌کنند ولی پاسخ مدل ارسال نمی‌شود. (فایل .env)"
         )
 
-    core = BotCore(cfg, store, sender, ai=GroupAI(cfg, store, sender, ai_client))
-
     owner = store.get_owner()
     if owner:
         log.info("مالک سراسری فعلی (از حافظه دائمی): user_id=%s | %s | ثبت‌شده در %s",
@@ -101,6 +99,8 @@ async def run(cfg: Config) -> None:
     )
 
     me = await client.get_me()
+    core = BotCore(cfg, store, sender, ai=GroupAI(cfg, store, sender, ai_client),
+                   session_user_id=me.id)
     log.info("اتصال برقرار شد: %s (id=%s)", getattr(me, "first_name", "?"), getattr(me, "id", "?"))
 
     async def handler(event):

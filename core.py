@@ -30,6 +30,7 @@ from models import DEFAULT_MODEL_PROFILE_ID, MODEL_PROFILES, get_model_profile
 from pv_orders import PvOrders
 from pv_rules import option_number
 from sender import BrandSender, SendReport
+from sender_guard import Author, SenderGuard
 from splusthon import types
 from storage import OwnerStore
 
@@ -314,6 +315,7 @@ class BotCore:
         ai: Optional[GroupAI] = None,
         *,
         now_provider=None,
+        session_user_id: Optional[int] = None,
     ):
         self.cfg = cfg
         self.store = store
@@ -321,6 +323,7 @@ class BotCore:
         self.ai = ai or GroupAI(cfg, store, self.sender)
         self._now_provider = now_provider
         self.pv = PvOrders(cfg, store, self.sender, self._now)
+        self.sender_guard = SenderGuard(session_user_id, cfg.ignored_sender_ids)
         self._ad_processed_ids: set[tuple[int, int]] = set()
 
     def _now(self, tz=None):
@@ -339,12 +342,18 @@ class BotCore:
             uid = getattr(event, "sender_id", None)
             if uid and getattr(event, "id", None) and getattr(event, "chat_id", None):
                 async with self.pv.user_lock(uid):
-                    await self._handle_private(client, event)
+                    # Resolve inside the existing per-user lock so a cold lookup
+                    # cannot reorder this user's menu/order messages.
+                    if await self.sender_guard.classify(client, event) is Author.USER:
+                        await self._handle_private(client, event)
             return
 
         text = getattr(event, "raw_text", None) or ""
         is_group = bool(getattr(event, "is_group", False))
         if not text.strip():
+            return
+        author = await self.sender_guard.classify(client, event)
+        if author is Author.SKIP or (author is Author.BOT and not is_group):
             return
 
         sender_id = int(getattr(event, "sender_id", 0) or 0)
@@ -355,7 +364,7 @@ class BotCore:
         # به‌روزرسانی خودکار نام واقعی گروه در رجیستری در صورت نیاز
         if is_group:
             chat = getattr(event, "chat", None)
-            if chat and getattr(chat, "title", None) and chat.title.strip():
+            if author is Author.USER and chat and getattr(chat, "title", None) and chat.title.strip():
                 t = chat.title.strip()
                 if t not in ("گروه", "بدون نام", "گروه بدون نام"):
                     rec = self.store.get_group_record(chat_id)
@@ -363,7 +372,7 @@ class BotCore:
                         self.store.update_group_name(chat_id, t)
 
             # ثبت اطلاعات فرستنده در فهرست اعضای شناخته‌شده گروه
-            if self.ai and sender_id:
+            if author is Author.USER and self.ai and sender_id:
                 sender_obj = getattr(event, "sender", None)
                 f_name = (getattr(sender_obj, "first_name", "") or "").strip()
                 l_name = (getattr(sender_obj, "last_name", "") or "").strip()
@@ -392,9 +401,16 @@ class BotCore:
                 or is_filter_cmd
             )
             filtered_words = self.store.get_filtered_words(chat_id)
-            is_ad = bool(filtered_words and brand.contains_filtered_word(text, filtered_words))
+            matched_ad = brand.contains_filtered_word(text, filtered_words) if filtered_words else None
+            if author is Author.BOT:
+                # No command, AI call, typing indicator, warning or owner tag.
+                # Keep the pre-existing ad filter effective against bot-posted ads.
+                if (not is_cmd and matched_ad and self.store.is_active(current_time)
+                        and not self.store.is_group_expired(chat_id, current_time)):
+                    await self._filter_group_ad(client, event, chat_id, sender_id, matched_ad, notify=False)
+                return
 
-            if text and self.ai and not is_cmd and not is_ad:
+            if text and self.ai and not is_cmd and not matched_ad:
                 is_reply = bool(getattr(event, "is_reply", False))
                 reply_to_bot = False
                 reply_to_info = None
@@ -644,14 +660,9 @@ class BotCore:
         # -------------------------------------------------------------
         # ک/۲) پایش و حذف تبلیغات و هرزنامه در گروه (Anti-Ad Filter)
         # -------------------------------------------------------------
-        if is_group and not is_cmd:
-            if filtered_words:
-                is_exempt = self.store.is_owner(sender_id) or self.store.is_registered_bot_owner(sender_id)
-                if not is_exempt:
-                    matched_word = brand.contains_filtered_word(text, filtered_words)
-                    if matched_word:
-                        await self._handle_ad_detected(client, event, chat_id, sender_id, matched_word=matched_word)
-                        return
+        if is_group and not is_cmd and matched_ad:
+            if await self._filter_group_ad(client, event, chat_id, sender_id, matched_ad):
+                return
 
         # -------------------------------------------------------------
         # ک) گفت‌وگو با هوش مصنوعی (فقط Reply در گروه فعال)
@@ -913,7 +924,14 @@ class BotCore:
                 reply_to_msg_id=getattr(event, "id", None),
             )
 
-    async def _handle_ad_detected(self, client, event, chat_id: int, sender_id: int, matched_word: Optional[str] = None) -> None:
+    async def _filter_group_ad(self, client, event, chat_id, sender_id, word, *, notify=True):
+        if self.store.is_owner(sender_id) or self.store.is_registered_bot_owner(sender_id):
+            return False
+        await self._handle_ad_detected(client, event, chat_id, sender_id, matched_word=word, notify=notify)
+        return True
+
+    async def _handle_ad_detected(self, client, event, chat_id: int, sender_id: int,
+                                  matched_word: Optional[str] = None, *, notify: bool = True) -> None:
         msg_id = getattr(event, "id", 0) or 0
         dedup_key = (chat_id, msg_id)
         if dedup_key in self._ad_processed_ids:
@@ -945,6 +963,9 @@ class BotCore:
                 await del_fn(chat_id, [msg_id])
         except Exception as exc:
             log.warning("عدم موفقیت در حذف پیام تبلیغاتی %s: %s", msg_id, exc)
+
+        if not notify:
+            return
 
         # ۲) تگ کردن مالک گروه با نام کاربری یا عنوان
         owner_tag = None

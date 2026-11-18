@@ -88,6 +88,12 @@ class FakeClient:
             return types.InputPeerUser(user_id=self.me_id, access_hash=0)
         return u
 
+    async def get_entity(self, peer):
+        # Resolve a sparse incoming user update without a network connection.
+        if not isinstance(peer, int) or peer <= 0:
+            raise ValueError("Unknown test peer")
+        return types.User(id=peer, user_type=types.UserTypeNormal(), first_name="User")
+
     async def get_input_entity(self, chat):
         chat_id = int(chat)
         if chat_id > 0:
