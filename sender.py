@@ -21,7 +21,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from splusthon import functions, types
+from splusthon import errors, functions, types
 
 import brand
 from config import Config
@@ -202,6 +202,7 @@ class BrandSender:
         entities: list[object],
         *,
         reply_to_msg_id: Optional[int] = None,
+        random_id: Optional[int] = None,
     ) -> SendReport:
         """ارسال پیام با entityهای سفارشی به همراه زنجیره‌ی fallback کامل:
 
@@ -226,6 +227,7 @@ class BrandSender:
                     functions.messages.SendMessageRequest(
                         peer=peer,
                         message=text,
+                        random_id=random_id,
                         entities=ent_list or None,
                         reply_to=self._plain_reply(reply_to_msg_id),
                         no_webpage=not self.cfg.link_preview,
@@ -238,6 +240,11 @@ class BrandSender:
                 log.info("پیام با entity ارسال شد (حالت: %s)", name)
                 return report
             except Exception as exc:  # noqa: BLE001
+                if random_id is not None and isinstance(exc, errors.RandomIdDuplicateError):
+                    # An earlier request with this persisted id reached the server.
+                    report.ok, report.mode = True, "already-sent"
+                    report.attempts.append({"mode": name, "ok": True})
+                    return report
                 err = f"{type(exc).__name__}: {exc}"
                 report.attempts.append({"mode": name, "ok": False, "error": err})
                 report.error = err

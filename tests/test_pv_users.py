@@ -315,13 +315,11 @@ class TestRegression(PvUsersTestCase):
 
     def test_33_pv_auto_reply_unchanged_for_regular_users(self):
         run(self.pv("سلام", user_id=USER_2, username="osine"))
-        self.assertEqual(len(self.client.requests), 2)      # معرفی + منو
-        req = self.client.requests[0]                       # معرفی، با همان قالب قبلی
-        self.assertEqual(req.message, brand.FULL_TEXT)
+        self.assertEqual(self.sent_texts(), [brand.MENU_TEXT])
+        req = self.client.requests[0]
         kinds = [type(e).__name__ for e in req.entities]
         self.assertIn("MessageEntityBlockquote", kinds)
-        self.assertEqual(kinds.count("MessageEntityBold"), len(brand.BODY_LINES))
-        self.assertIn(brand.LINK_LINE, req.message)
+        self.assertIn("MessageEntityBold", kinds)
 
     def test_34_anti_loop_outgoing_pv_is_ignored(self):
         run(self.pv(brand.FULL_TEXT, user_id=USER_2, out=True))
@@ -334,9 +332,8 @@ class TestRegression(PvUsersTestCase):
         before = len(self.client.requests)
         run(self.pv("سلام", user_id=USER_2))
 
-        # کاربر جدید → معرفی + منو (دو پیام)؛ دستور مالک هم همچنان کار می‌کند
-        self.assertEqual(len(self.client.requests), before + 2)
-        self.assertEqual(self.client.requests[-2].message, brand.FULL_TEXT)
+        # دستور مالک همچنان مستقل از منوی کاربر جدید است.
+        self.assertEqual(len(self.client.requests), before + 1)
         self.assertEqual(self.client.requests[-1].message, brand.MENU_TEXT)
 
 

@@ -791,8 +791,8 @@ class TestPVIsolation(AITestCase):
         self.assertFalse(self.store.ai_is_enabled(OWNER))
         self.assertEqual(self.store.ai_allowed_users(GROUP_A), [])
         self.assertEqual(self.ai_calls(), 0)
-        # PV رفتار خودش را دارد: هر کاربر جدید → معرفی + منو
-        self.assertEqual(self.texts()[:2], [brand.FULL_TEXT, brand.MENU_TEXT])
+        # PV مستقل است: اولین پیام منو است؛ دستورهای AI گروه در PV اجرا نمی‌شوند.
+        self.assertEqual(self.texts(), [brand.MENU_TEXT])
 
     def test_11b_pv_chat_does_not_call_ai_even_with_reply(self):
         self.make_owner()
@@ -802,14 +802,14 @@ class TestPVIsolation(AITestCase):
         run(self.pv("سلام", user_id=OWNER, reply_to=self.bot_reply()))
 
         self.assertEqual(self.ai_calls(), 0, "PV نباید AI را فعال کند")
-        self.assertEqual(self.texts(), [brand.FULL_TEXT, brand.MENU_TEXT])   # رفتار PV
+        self.assertEqual(self.texts(), [brand.MENU_TEXT])   # رفتار PV
 
     def test_11c_ai_commands_do_not_break_pv_menu(self):
         self.make_owner()
-        run(self.pv("سازنده", user_id=USER_1))     # اولین پیام → معرفی + منو
+        run(self.pv("سلام", user_id=USER_1))       # اولین پیام → منو
         self.client.clear_requests()
 
-        run(self.pv("سازنده", user_id=USER_1))     # پیام بعدی → پاسخ منو
+        run(self.pv("۱", user_id=USER_1))          # پیام بعدی → پاسخ منو
         self.assertEqual(self.texts(), ["@osine2"])
 
 

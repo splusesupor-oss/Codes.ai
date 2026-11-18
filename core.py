@@ -10,11 +10,12 @@
   ۷) «راهنما» → راهنمای فرمت‌دار هوش مصنوعی.
   ۸) «ai plun» → نمایش سهمیه باقیمانده روزانه گروه.
   ۹) «ai» → پاسخ «جانم 👾».
-  ۱۰) پیام خصوصی (PV) → ثبت آمار، دستورات مدیریتی مالک، معرفی یک‌بار و منوی ۶ گزینه‌ای.
+  ۱۰) پیام خصوصی (PV) → ثبت آمار، دستورات مدیریتی مالک، منوی عددی و سفارش‌های پایدار.
 """
 
 from __future__ import annotations
 
+import asyncio
 import datetime as _dt
 import logging
 import re
@@ -26,6 +27,8 @@ from ai_service import GroupAI
 from brand import chunk_lines
 from config import Config
 from models import DEFAULT_MODEL_PROFILE_ID, MODEL_PROFILES, get_model_profile
+from pv_orders import PvOrders
+from pv_rules import option_number
 from sender import BrandSender, SendReport
 from splusthon import types
 from storage import OwnerStore
@@ -241,13 +244,8 @@ def match_ai_command(text: str, cfg: Config) -> Optional[str]:
 
 
 def match_menu_option(text: str) -> Optional[str]:
-    if not text or not text.strip():
-        return None
-    given = _normalization_variants(text)
-    for option in brand.MENU_OPTIONS:
-        if given & _normalization_variants(option):
-            return option
-    return None
+    number = option_number(text or "")
+    return brand.MENU_OPTIONS[number-1] if number is not None else None
 
 
 RE_FILTER_ADD = re.compile(r"^(?:flter|filter)\s+(.+)$", re.IGNORECASE)
@@ -322,6 +320,7 @@ class BotCore:
         self.sender = sender or BrandSender(cfg)
         self.ai = ai or GroupAI(cfg, store, self.sender)
         self._now_provider = now_provider
+        self.pv = PvOrders(cfg, store, self.sender, self._now)
         self._ad_processed_ids: set[tuple[int, int]] = set()
 
     def _now(self, tz=None):
@@ -337,7 +336,10 @@ class BotCore:
             return
 
         if getattr(event, "is_private", None) is True:
-            await self._handle_private(client, event)
+            uid = getattr(event, "sender_id", None)
+            if uid and getattr(event, "id", None) and getattr(event, "chat_id", None):
+                async with self.pv.user_lock(uid):
+                    await self._handle_private(client, event)
             return
 
         text = getattr(event, "raw_text", None) or ""
@@ -1230,18 +1232,10 @@ class BotCore:
         norm_text = normalize_text(text)
         current_time = self._now()
 
-        is_first_message = False
-        if sender_id:
-            is_first_message = self.store.register_pv_user(
-                sender_id,
-                username=self._username(event),
-                display_name=self._display_name(event),
-            )
-            if is_first_message:
-                log.info("کاربر جدید PV ثبت شد: user_id=%s (تعداد: %s)",
-                         sender_id, self.store.count_pv_users())
+        await asyncio.to_thread(self.store.register_pv_user, sender_id,
+                                username=self._username(event), display_name=self._display_name(event))
 
-        if self.store.has_owner() and self.store.is_owner(sender_id):
+        if await asyncio.to_thread(self.store.is_owner, sender_id):
             if match_command(text, self.cfg) == "owner":
                 new_state = not self.store.is_global_suspended()
                 self.store.set_global_suspended(new_state)
@@ -1282,7 +1276,7 @@ class BotCore:
                 await self._handle_pv_ai_accounts(client, event)
                 return
 
-            if self.store.is_active(current_time):
+            if await asyncio.to_thread(self.store.is_active, current_time):
                 command = match_pv_admin_command(text, self.cfg)
                 if command == "count":
                     await self._send_pv_count(client, event)
@@ -1291,45 +1285,17 @@ class BotCore:
                     await self._send_pv_list(client, event)
                     return
 
-        if not self.cfg.private_auto_reply:
+        if not self.cfg.private_auto_reply or not await asyncio.to_thread(self.store.is_active, current_time):
             return
 
-        if not self.store.is_active(current_time):
-            log.debug("ربات خاموش است؛ پیام PV از %s نادیده گرفته شد.", sender_id)
-            return
-
+        idle_command = None
         if is_help_command(norm_text):
-            help_text, entities = brand.build_help_message()
-            await self.sender.send_entities(
-                client, await self._peer_of(event), help_text, entities,
-                reply_to_msg_id=getattr(event, "id", None)
-            )
-            return
-
-        if is_first_message:
-            await self._send_intro_and_menu(client, event)
-            return
-
-        option = match_menu_option(text)
-        if option:
-            await self._send_pv_answer(client, event, option)
-            return
-
-    async def _send_intro_and_menu(self, client, event) -> None:
-        log.info("اولین پیام کاربر %s در PV → معرفی + منو",
-                 getattr(event, "sender_id", None))
-        self._log_report(await self._send_brand(client, event))
-        self._log_report(
-            await self.sender.send_styled(client, await self._peer_of(event), brand.MENU_TEXT)
-        )
-
-    async def _send_pv_answer(self, client, event, option: str) -> None:
-        text = brand.PV_REPLIES[option]
-        log.info("گزینه «%s» از کاربر %s → ارسال پاسخ",
-                 option, getattr(event, "sender_id", None))
-        self._log_report(
-            await self.sender.send_styled(client, await self._peer_of(event), text)
-        )
+            idle_command = "help"
+        elif (match_pv_admin_command(text, self.cfg) or match_ai_command(text, self.cfg)
+              or is_ai_accounts_command(norm_text) or is_ai_accounts_reset_command(norm_text)):
+            idle_command = "ignore"  # private admin/group commands never become menu choices
+        await self.pv.handle(client, event, username=self._username(event),
+                             display_name=self._display_name(event), idle_command=idle_command)
 
     async def _send_pv_count(self, client, event) -> None:
         users = self.store.list_pv_users()

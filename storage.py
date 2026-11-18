@@ -20,6 +20,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from pv_store import PV_SCHEMA, PvStoreMixin
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS global_owner (
     slot               INTEGER PRIMARY KEY CHECK (slot = 1),   -- فقط یک رکورد مجاز است
@@ -249,7 +251,7 @@ def _align_pair(
     return now_cmp, exp_cmp
 
 
-class OwnerStore:
+class OwnerStore(PvStoreMixin):
     """ذخیره‌ساز اتمیک مالک سراسری و تنظیمات ربات."""
 
     def __init__(self, db_path: str | Path, *, busy_timeout_ms: int = 30_000):
@@ -264,7 +266,7 @@ class OwnerStore:
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA synchronous=NORMAL")
             self._conn.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")
-            self._conn.executescript(SCHEMA)
+            self._conn.executescript(SCHEMA + PV_SCHEMA)
             self._conn.commit()
 
     # ------------------------------------------------------------------ API مالک سراسری

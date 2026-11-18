@@ -116,9 +116,12 @@ async def run(cfg: Config) -> None:
              cfg.ai_online_command, cfg.ai_of_command,
              cfg.ai_list_command, cfg.ai_listx_command)
 
+    outbox = asyncio.create_task(core.pv.run_outbox(client), name="pv-owner-outbox")
     try:
         await client.run_until_disconnected()
     finally:
+        outbox.cancel()
+        await asyncio.gather(outbox, return_exceptions=True)
         await ai_client.close()
         store.close()
         log.info("اتصال بسته شد.")

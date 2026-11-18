@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from itertools import count
 from typing import Optional, Any
 
 from splusthon import functions, types
@@ -237,13 +238,16 @@ class FakeAI:
 
 
 class FakeEvent:
+    _pv_ids = count(1)
+
     def __init__(
         self,
         text: str,
         *,
         user_id: int,
         chat_id: int,
-        msg_id: int = 1,
+        msg_id: Optional[int] = None,
+        media: Any = None,
         is_group: bool = True,
         is_private: Optional[bool] = None,
         out: bool = False,
@@ -256,9 +260,10 @@ class FakeEvent:
         self.raw_text = text
         self.sender_id = user_id
         self.chat_id = chat_id
-        self.id = msg_id
+        self.media = media
         self.is_group = is_group
         self.is_private = (not is_group) if is_private is None else is_private
+        self.id = msg_id if msg_id is not None else (next(self._pv_ids) if self.is_private else 1)
         self.out = out
         self._reply_message = reply_to
         self.reply_to_msg_id = reply_to.id if reply_to is not None else None

@@ -1,12 +1,4 @@
-"""
-تست‌های رفتار جدید پیام خصوصی:
-
-  * اولین پیام هر کاربر PV → معرفی (یک‌بار) + منوی انتخاب (یک‌بار)
-  * پیام‌های بعدی → معرفی/منو تکرار نمی‌شود
-  * ۶ گزینه‌ی منو → هر کدام فقط پاسخ خودش، با قالب Bold + نقل‌قول شیشه‌ای
-  * پایداری «اولین پیام» بعد از restart و مستقل از تغییر username
-  * دست‌نخورده ماندن گروه‌ها، کدرز، ai cod و دستورهای مالک
-"""
+"""Private menu contract and regression: routing, exact copy/formatting and gates."""
 
 from __future__ import annotations
 
@@ -19,6 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import brand  # noqa: E402
+import pv_messages as cards
 from config import Config  # noqa: E402
 from core import BotCore, match_menu_option  # noqa: E402
 from sender import BrandSender  # noqa: E402
@@ -72,32 +65,23 @@ class PvMenuTestCase(unittest.TestCase):
 
 
 class TestFirstMessage(PvMenuTestCase):
-    def test_1_first_message_sends_intro_then_menu(self):
-        run(self.pv("سلام", user_id=USER_A, username="osine", display_name="علی"))
-
-        self.assertEqual(len(self.client.requests), 2, "باید معرفی + منو ارسال شود")
-        intro, menu = self.client.requests
-        self.assertEqual(intro.message, brand.FULL_TEXT)      # همان معرفی فعلی
-        self.assertEqual(menu.message, brand.MENU_TEXT)
+    def test_1_first_message_is_only_menu_even_if_a_number(self):
+        run(self.pv("6", user_id=USER_A))
+        self.assertEqual(self.texts(), [brand.MENU_TEXT])
 
     def test_1b_menu_content_is_exact(self):
         run(self.pv("سلام", user_id=USER_A))
-        self.assertEqual(
-            self.client.requests[1].message,
-            "برای انتخاب فقط دستورات زیر را ارسال کنید\n\n"
-            "سازنده\nکانال روباه\nربات پشتیبانی\nسایت خرید\nکانال دانلود\nربات روباه",
-        )
+        self.assertEqual(self.texts(), [
+            "🧩 برای انتخاب فقط گزینه را ارسال کنید\n\n\n"
+            "1ـ سازنده\n2ـ کانال روباه\n3ـ ربات پشتیبانی\n4ـ سایت خرید هوش مصنوعی\n"
+            "5ـ ربات روباه\n6ـ سفارش عکس\n7ـ سفارش ویدیو\n8_ تست چت بات هوش مصنوعی"])
 
     def test_2_second_message_does_not_resend_intro_or_menu(self):
         run(self.pv("سلام", user_id=USER_A))
         self.client.clear_requests()
-
-        run(self.pv("ممنون", user_id=USER_A))          # متن غیردستوری
-        self.assertEqual(self.client.requests, [], "معرفی/منو نباید تکرار شود")
-
-        run(self.pv("سازنده", user_id=USER_A))          # دستور
-        self.assertEqual(len(self.client.requests), 1)
-        self.assertEqual(self.last_request().message, "@osine2")   # فقط پاسخ دستور
+        run(self.pv("ممنون", user_id=USER_A))
+        run(self.pv("۱", user_id=USER_A))
+        self.assertEqual(self.texts(), ["درخواست نامعتبر", "@osine2"])
 
     def test_3_restart_does_not_make_user_new_again(self):
         run(self.pv("سلام", user_id=USER_A, username="osine"))
@@ -114,7 +98,7 @@ class TestFirstMessage(PvMenuTestCase):
                 await core2.on_new_message(client2, event)
 
             run(scenario())
-            self.assertEqual(client2.requests, [], "کاربر بعد از restart نباید new باشد")
+            self.assertEqual(client2.text_messages(), ["درخواست نامعتبر"])
             self.assertEqual(store2.count_pv_users(), 1)
         finally:
             store2.close()
@@ -126,19 +110,19 @@ class TestFirstMessage(PvMenuTestCase):
 
         # همان user_id، username متفاوت → کاربر جدید نیست
         run(self.pv("سلام", user_id=USER_A, username="osine2_new"))
-        self.assertEqual(self.client.requests, [])
+        self.assertEqual(self.texts(), ["درخواست نامعتبر"])
         self.assertEqual(self.store.count_pv_users(), 1)
 
-    def test_5_second_user_gets_own_intro_and_menu_once(self):
+    def test_5_second_user_gets_own_menu_once(self):
         run(self.pv("سلام", user_id=USER_A, username="osine"))
         run(self.pv("سلام", user_id=USER_B, username="elism", display_name="الیس"))
         self.client.clear_requests()
 
         run(self.pv("سلام", user_id=USER_B))            # پیام دوم کاربر دوم
-        self.assertEqual(self.client.requests, [])
+        self.assertEqual(self.texts(), ["درخواست نامعتبر"])
         self.assertEqual(self.store.count_pv_users(), 2)  # دو کاربر مستقل
 
-    def test_6_restart_then_second_user_still_gets_intro_once(self):
+    def test_6_restart_then_second_user_still_gets_menu_once(self):
         run(self.pv("سلام", user_id=USER_A))
         self.store.close()
         store2 = OwnerStore(self.db)
@@ -153,7 +137,7 @@ class TestFirstMessage(PvMenuTestCase):
 
             run(scenario())
             self.assertEqual(client2.text_messages(),
-                             [brand.FULL_TEXT, brand.MENU_TEXT])
+                             [brand.MENU_TEXT])
         finally:
             store2.close()
             self.store = OwnerStore(self.db)
@@ -163,31 +147,31 @@ class TestMenuReplies(PvMenuTestCase):
     """گزینه‌های منو: پاسخ دقیق + قالب Bold و نقل‌قول شیشه‌ای."""
 
     def _ask(self, option, *, user_id=USER_A):
-        run(self.pv("سلام", user_id=user_id))        # اولین پیام: معرفی + منو
+        run(self.pv("سلام", user_id=user_id))        # اولین پیام: فقط منو
         self.client.clear_requests()
         run(self.pv(option, user_id=user_id))
         self.assertEqual(len(self.client.requests), 1, "باید فقط یک پاسخ برود")
         return self.last_request()
 
     def test_7_sazande(self):
-        self.assertEqual(self._ask("سازنده").message, "@osine2")
+        self.assertEqual(self._ask("۱").message, "@osine2")
 
     def test_8_kanal_roobah(self):
-        self.assertEqual(self._ask("کانال روباه").message, "@ai_fox")
+        self.assertEqual(self._ask("٢").message, "@ai_fox")
 
     def test_9_robot_poshtibani(self):
-        self.assertEqual(self._ask("ربات پشتیبانی").message, "@Aifox_bot")
+        self.assertEqual(self._ask("3").message, "@Aifox_bot")
 
     def test_10_site_kharid(self):
-        self.assertEqual(self._ask("سایت خرید").message,
+        self.assertEqual(self._ask("4").message,
                          "https://foxbot.osine2.workers.dev/")
 
-    def test_11_kanal_download(self):
-        self.assertEqual(self._ask("کانال دانلود").message,
-                         "https://splus.ir/Orderawebsite")
+    def test_11_photo_replaces_download(self):
+        self.assertEqual(self._ask("6").message, cards.KIND.text)
+        self.assertNotIn("کانال دانلود", brand.MENU_OPTIONS)
 
     def test_12_robot_roobah_full_structure(self):
-        req = self._ask("ربات روباه")
+        req = self._ask("۵")
         self.assertEqual(
             req.message,
             "ربات های روباه\n\n"
@@ -197,7 +181,7 @@ class TestMenuReplies(PvMenuTestCase):
         )
 
     def test_13_all_replies_are_bold(self):
-        for option in brand.MENU_OPTIONS:
+        for option in "12345":
             with self.subTest(option=option):
                 req = self._ask(option)
                 bolds = [e for e in req.entities
@@ -214,7 +198,7 @@ class TestMenuReplies(PvMenuTestCase):
                         self.assertIn(line, covered)
 
     def test_14_all_replies_are_inside_glass_quote(self):
-        for option in brand.MENU_OPTIONS:
+        for option in "12345":
             with self.subTest(option=option):
                 req = self._ask(option)
                 quotes = [e for e in req.entities
@@ -225,12 +209,13 @@ class TestMenuReplies(PvMenuTestCase):
 
     def test_15_menu_message_is_bold_and_quoted(self):
         run(self.pv("سلام", user_id=USER_A))
-        menu = self.client.requests[1]
+        menu = self.client.requests[0]
 
         quotes = [e for e in menu.entities
                   if isinstance(e, types.MessageEntityBlockquote)]
         self.assertEqual(len(quotes), 1)
-        self.assertEqual(quotes[0].length, brand.utf16_len(brand.MENU_TEXT))
+        self.assertEqual(quotes[0].offset, 0)
+        self.assertEqual(quotes[0].length, brand.utf16_len(brand.MENU_TITLE))
 
         bolds = [e for e in menu.entities if isinstance(e, types.MessageEntityBold)]
         units = menu.message.encode("utf-16-le")
@@ -238,13 +223,13 @@ class TestMenuReplies(PvMenuTestCase):
             units[e.offset * 2:(e.offset + e.length) * 2].decode("utf-16-le")
             for e in bolds
         )
-        self.assertIn("برای انتخاب فقط دستورات زیر را ارسال کنید", covered)
-        for option in brand.MENU_OPTIONS:      # هر ۶ گزینه هم Bold هستند
+        self.assertIn(brand.MENU_TITLE, covered)
+        for option in brand.MENU_OPTIONS:      # هر ۸ گزینه هم Bold هستند
             self.assertIn(option, covered)
 
     def test_16_utf16_offsets_are_correct(self):
         """پاسخ «ربات روباه» ایموجی 🔹 دارد؛ آفست نباید مثل len() پایتون باشد."""
-        req = self._ask("ربات روباه")
+        req = self._ask("۵")
         self.assertGreater(brand.utf16_len(req.message), len(req.message))
 
         units = req.message.encode("utf-16-le")
@@ -255,20 +240,15 @@ class TestMenuReplies(PvMenuTestCase):
 
     def test_17_repeated_option_does_not_resend_menu(self):
         run(self.pv("سلام", user_id=USER_A))
-        run(self.pv("سازنده", user_id=USER_A))
-        run(self.pv("سازنده", user_id=USER_A))
-
-        texts = self.texts()
-        self.assertEqual(texts[0], brand.FULL_TEXT)         # معرفی فقط یک‌بار
-        self.assertEqual(texts.count(brand.MENU_TEXT), 1)   # منو فقط یک‌بار
-        self.assertEqual(texts[2:], ["@osine2", "@osine2"])
+        run(self.pv("1", user_id=USER_A))
+        run(self.pv("1", user_id=USER_A))
+        self.assertEqual(self.texts(), [brand.MENU_TEXT, "@osine2", "@osine2"])
 
     def test_18_matching_variants(self):
-        self.assertEqual(match_menu_option("  کانال   روباه "), "کانال روباه")
-        self.assertEqual(match_menu_option("ربات\u200cپشتیبانی"), "ربات پشتیبانی")
-        self.assertEqual(match_menu_option("سایت خرید"), "سایت خرید")
-        self.assertIsNone(match_menu_option("کدرز"))
-        self.assertIsNone(match_menu_option("ai cod"))
+        for number in ("4", "۴", " ٤ "):
+            self.assertEqual(match_menu_option(number), "سایت خرید هوش مصنوعی")
+        for value in ("کانال روباه", "سایت خرید", "کدرز", "ai cod", "14", "1_", "۱.۰", ""):
+            self.assertIsNone(match_menu_option(value))
 
 
 class TestPvMenuGuards(PvMenuTestCase):
@@ -285,8 +265,8 @@ class TestPvMenuGuards(PvMenuTestCase):
         run(self.pv("ai cod", user_id=USER_A))
         # «ai cod» در PV نباید مالک قبلی (OWNER_ID از setUp) را تغییر دهد
         self.assertEqual(self.store.get_owner().user_id, OWNER_ID)
-        # پیام اول بود → معرفی + منو (و «ai cod» گزینه‌ی منو نیست)
-        self.assertEqual(self.texts(), [brand.FULL_TEXT, brand.MENU_TEXT])
+        # پیام اول بود → فقط منو (و «ai cod» گزینه‌ی منو نیست)
+        self.assertEqual(self.texts(), [brand.MENU_TEXT])
 
     def test_20b_pv_is_silent_before_owner_claim(self):
         # قبل از فعال‌سازی، PV کاملاً بی‌صدا است (ثبت می‌کند ولی پیام نمی‌فرستد)
@@ -325,7 +305,7 @@ class TestPvMenuGuards(PvMenuTestCase):
     def test_23_menu_reply_goes_only_to_same_user(self):
         run(self.pv("سلام", user_id=USER_A))
         self.client.clear_requests()
-        run(self.pv("سازنده", user_id=USER_A))
+        run(self.pv("1", user_id=USER_A))
 
         req = self.last_request()
         self.assertIsInstance(req.peer, types.InputPeerUser)
