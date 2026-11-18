@@ -216,7 +216,7 @@ class Orders(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.last(), brand.MENU_TEXT)
 
     async def test_all_main_choices_including_paid_video_and_exact_chat_test(self):
-        expected = ['@osine2','@ai_fox','@Aifox_bot','https://foxbot.osine2.workers.dev/',
+        expected = ['@osine2','@ai_fox','@Aifox_bot','https://acod.osine2.workers.dev/',
                     'ربات های روباه\n\nنسخه یک🔹 @fox_bot\nنسخه دو🔹 @aifox\nنسخه سه🔹 @bot_fox',
                     ui.KIND.text, ui.VIDEO.text, ui.CHAT_TEST.text]
         for n, text in enumerate(expected, 1):

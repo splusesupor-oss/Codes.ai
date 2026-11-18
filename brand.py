@@ -151,7 +151,7 @@ PV_REPLIES = {
     "سازنده": "@osine2",
     "کانال روباه": "@ai_fox",
     "ربات پشتیبانی": "@Aifox_bot",
-    "سایت خرید هوش مصنوعی": "https://foxbot.osine2.workers.dev/",
+    "سایت خرید هوش مصنوعی": "https://acod.osine2.workers.dev/",
     "ربات روباه": (
         "ربات های روباه"
         "\n\n"

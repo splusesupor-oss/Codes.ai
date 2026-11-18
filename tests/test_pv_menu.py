@@ -164,7 +164,7 @@ class TestMenuReplies(PvMenuTestCase):
 
     def test_10_site_kharid(self):
         self.assertEqual(self._ask("4").message,
-                         "https://foxbot.osine2.workers.dev/")
+                         "https://acod.osine2.workers.dev/")
 
     def test_11_photo_replaces_download(self):
         self.assertEqual(self._ask("6").message, cards.KIND.text)
